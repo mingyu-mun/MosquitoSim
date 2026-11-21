@@ -1,0 +1,40 @@
+# Unity
+unity/[Ll]ibrary/
+unity/[Tt]emp/
+unity/[Oo]bj/
+unity/[Bb]uild/
+unity/[Bb]uilds/
+unity/[Ll]ogs/
+unity/[Uu]ser[Ss]ettings/
+unity/[Mm]emoryCaptures/
+unity/*.csproj
+unity/*.sln
+unity/*.slnx
+unity/.vs/
+unity/.idea/
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+crashlytics-buildid.txt
+sysinfo.txt
+
+# Builds and training output
+builds/
+results/
+summaries/
+*.onnx.tmp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Planner logs and replay data (large; share separately)
+logs/
+replay/
+
+# OS
+.DS_Store
+Thumbs.db

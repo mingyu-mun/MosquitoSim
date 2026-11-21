@@ -1,56 +1,43 @@
 # MosquitoSim
 
-Unity 기반 모기 AI 시뮬레이터 프로젝트입니다. 모기 에이전트의 행동 학습과 상위 수준의 작업 계획을 결합하고, 학습하지 않은 환경에서의 일반화(generalization)와 환경 변화에 대한 적응(adaptation)을 비교합니다.
+Unity 기반 모기 에이전트 시뮬레이터입니다. 서브골 조건부 PPO 하위 정책 위에 상위 플래너(규칙, VLM)를 얹고, 학습하지 않은 환경에서의 일반화와 환경 변화에 대한 적응, 그리고 VLM 추론 지연이 성공률에 주는 영향을 비교합니다.
 
-## 프로젝트 개념
+## 구성
 
-- **Unity 시뮬레이션**: 모기, 사람, 장애물과 사물이 있는 실내 환경을 구성합니다.
-- **RL (Reinforcement Learning)**: 환경과의 상호작용을 통해 모기 에이전트의 행동을 학습합니다.
-- **BC (Behavior Cloning) / Expert Demonstration**: 전문가 시연 데이터를 바탕으로 행동을 모방 학습하고, RL과의 결합 효과를 비교합니다.
-- **Rule-Based Task Planning**: 명시적인 규칙을 이용해 상위 수준의 작업을 계획합니다.
-- **VLM (Vision-Language Model) Task Planning**: 시각·언어 정보를 활용하는 상위 수준의 작업 계획을 비교 대상으로 둡니다.
+- **과제:** 사람에게 들키지 않고 피부에 착지해 흡혈. 0단계 흡혈, 1단계 공간(장애물), 2단계 사람 이동·손, 3단계 모기향(확장)
+- **하위 정책:** 서브골 조건부 PPO(ML-Agents). 관측 59차원, 연속 가속 3차원. 시연 데이터 없음
+- **서브골:** APPROACH, HIDE, EVADE(2단계부터) + MOVE_TO 예약 칸. 플래너는 사건 때만 호출
+- **플래너 조건:** 서브골 고정(접근) 기준선, 규칙, VLM(상황 언어 지시문 + 카메라 5대의 잠재 이미지 텐서), 이미지를 뺀 VLM(절제)
+- **평가:** 같은 평가 시드로 짝지은 평가, 시드 3 × 30에피소드, 부트스트랩 95% 신뢰구간. VLM 호출 중에도 시뮬레이션을 멈추지 않으며(지연 주입), 양자화·토큰 가지치기·캐시 등으로 지연을 줄였을 때의 성공률을 측정
 
-## 일반화와 적응
+규격은 [docs/interface.md](docs/interface.md), Unity 설정과 0단계 실행 방법은 [docs/unity_setup.md](docs/unity_setup.md)에 있습니다.
 
-### Zero-shot generalization
-
-학습에 사용하지 않은 새로운 장애물, 사물, 방 구조에서도 추가 학습이나 정책 업데이트 없이 행동할 수 있는지를 평가합니다. 환경이 달라져도 이미 학습한 정책과 계획 방식으로 수행하는 능력을 의미합니다.
-
-### Adaptation
-
-모기향의 등장이나 사람의 움직임 등으로 환경 조건이 변할 때, 추가 경험이나 학습을 통해 행동을 조정하는 능력을 평가합니다. 추가 학습 없이 수행하는 zero-shot generalization과 구분하여 비교합니다. 적응에 사용할 구체적인 학습 방식과 평가 절차는 추후 확정합니다.
-
-## 비교군
-
-| 번호 | 비교군 | 구성 |
-| --- | --- | --- |
-| 1 | Pure RL | RL만 사용 |
-| 2 | Pure BC | 전문가 시연을 이용한 BC만 사용 |
-| 3 | BC+RL | BC와 RL 결합 |
-| 4 | Rule-Based Planning+RL | 규칙 기반 작업 계획과 RL 결합 |
-| 5 | VLM Planning+RL | VLM 작업 계획과 RL 결합 |
-| 6 | Rule-Based Planning+BC+RL | 규칙 기반 작업 계획, BC, RL 결합 |
-| 7 | VLM Planning+BC+RL | VLM 작업 계획, BC, RL 결합 |
-
-새로운 공간 구성에서의 zero-shot generalization과 변화한 환경에서의 adaptation을 구분하여 각 비교군의 특성을 살펴봅니다.
-
-## 초기 디렉터리 구조
+## 디렉터리
 
 ```text
 MosquitoSim/
-├── README.md
 ├── unity/
-│   └── Assets/
-│       ├── Scenes/.gitkeep
-│       ├── Scripts/.gitkeep
-│       ├── Prefabs/.gitkeep
-│       └── Materials/.gitkeep
+│   ├── Packages/manifest.json        # Unity 6 LTS, ML-Agents 4.1.0
+│   └── Assets/Scripts/
+│       ├── Agent/                    # ObsLayout, ObsBuilder, MosquitoMotor, MosquitoAgent, Subgoal
+│       ├── Env/                      # RoomArea, SkinZone, SimSettings
+│       └── Editor/Stage0SceneBuilder.cs
 ├── python/
-│   ├── training/.gitkeep
-│   └── evaluation/.gitkeep
-├── demonstrations/.gitkeep
-├── configs/.gitkeep
-└── docs/.gitkeep
+│   ├── mosquitosim/                  # obs_spec (관측 규격), subgoals (플래너 출력 파싱)
+│   ├── training/smoke_test.py        # 랜덤 정책 스모크 테스트
+│   ├── evaluation/
+│   └── tests/                        # 규격 테스트, C# 관측 순서 대조
+├── configs/stage0.yaml               # PPO + 착지 커리큘럼
+├── scripts/run_stage.sh              # 단계별 학습, 시드 여러 개
+└── docs/                             # 규격, 설정 안내, AI 활용 기록
 ```
 
-현재는 프로젝트 개념과 빈 디렉터리 구조만 정리한 초기 단계입니다. 모델 아키텍처, 구체적인 알고리즘, 관측·행동 공간, 보상 설계 및 구현 코드는 아직 확정하지 않았습니다. 각 디렉터리에는 구조 유지를 위한 빈 `.gitkeep`만 포함합니다.
+## 빠른 시작
+
+```bash
+python3.10 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pytest python/tests
+```
+
+Unity 쪽은 [docs/unity_setup.md](docs/unity_setup.md)를 따라 프로젝트를 열고 0단계 씬을 만든 뒤 빌드합니다.
