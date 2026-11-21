@@ -66,8 +66,9 @@ namespace MosquitoSim
             TargetSkin = m_Area.RandomSkinZone();
             m_Motor.ResetMotor(m_Area.SampleFreePoint());
 
-            // Stage 0 trains APPROACH only (final review 1-3). Random subgoals
-            // from stage 1 will come from a planner component via SetSubgoal.
+            // Stage 0 trains APPROACH only, to a random skin zone (equivalent to
+            // a random planner choosing the skin ID). From stage 1 a planner
+            // component sends subgoal + target ID via SetSubgoal.
             SetSubgoal(Subgoal.Approach, TargetSkin.Center);
 
             m_FeedTimer = 0f;

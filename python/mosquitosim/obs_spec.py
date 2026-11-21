@@ -24,7 +24,7 @@ POS_SCALE = 5.0          # m, relative positions and distances
 HUMAN_VEL_SCALE = 2.0    # m/s
 HAND_VEL_SCALE = 8.0     # m/s
 
-NUM_SUBGOAL_SLOTS = 4    # APPROACH, HIDE, EVADE, MOVE_TO (reserved)
+NUM_SUBGOAL_SLOTS = 4    # APPROACH, HIDE, EVADE, MOVE_TO
 
 
 @dataclass(frozen=True)
