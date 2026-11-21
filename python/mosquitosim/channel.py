@@ -78,7 +78,9 @@ def make_side_channel(queue: Optional[MessageQueue] = None):
 
         def send(self, payload: Dict) -> None:
             out = OutgoingMessage()
-            out.write_string(json.dumps(payload, ensure_ascii=False))
+            # write_string encodes as ASCII, so keep json.dumps' default \uXXXX escapes
+            # (a non-ASCII image_dir or text would raise UnicodeEncodeError otherwise).
+            out.write_string(json.dumps(payload))
             super().queue_message_to_send(out)
 
     return PlannerSideChannel()
