@@ -1,6 +1,7 @@
 """Check that the C# observation layout matches obs_spec.py (Unity cannot be
 compiled in CI, so the constants are compared as text)."""
 import re
+import sys
 
 from conftest import REPO_ROOT
 from mosquitosim import obs_spec
@@ -71,10 +72,18 @@ def test_builder_writes_by_layout_constant():
 
 def test_stage0_config_parameters_are_read():
     import yaml
-    cfg = yaml.safe_load((REPO_ROOT / "configs" / "stage0.yaml").read_text(encoding="utf-8"))
-    agent = (CS_DIR / "Agent" / "MosquitoAgent.cs").read_text(encoding="utf-8")
-    for key in cfg["environment_parameters"]:
-        if key == "planner":
-            continue  # read by the planner component from stage 1
-        assert f'"{key}"' in agent, f"{key} set in config but never read"
-    assert "Mosquito" in cfg["behaviors"]
+    cs = "\n".join(f.read_text(encoding="utf-8") for f in CS_DIR.rglob("*.cs"))
+    for stage in (0, 1, 2):
+        cfg = yaml.safe_load((REPO_ROOT / "configs" / f"stage{stage}.yaml").read_text(encoding="utf-8"))
+        for key in cfg["environment_parameters"]:
+            assert f'"{key}"' in cs, f"stage{stage}: {key} set in config but never read in Unity"
+        assert "Mosquito" in cfg["behaviors"]
+
+
+def test_eval_params_are_read():
+    sys.path.insert(0, str(REPO_ROOT / "python" / "evaluation"))
+    import ast
+    src = (REPO_ROOT / "python" / "evaluation" / "evaluate.py").read_text(encoding="utf-8")
+    keys = re.findall(r'"(\w+)": ', src[src.index("params = {"):src.index("needs_images")])
+    cs = "\n".join(f.read_text(encoding="utf-8") for f in CS_DIR.rglob("*.cs"))
+    assert keys and all(f'"{k}"' in cs for k in keys), keys

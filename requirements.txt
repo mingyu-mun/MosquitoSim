@@ -1,6 +1,8 @@
-# Python 3.10.12
+# Training and evaluation. Python 3.10.12 (mlagents 1.1.0 requires >=3.10.1,<=3.10.12)
 mlagents==1.1.0
 setuptools<82
 numpy
 pyyaml
+onnxruntime
 pytest
+onnx            # tests only (builds a small policy model)

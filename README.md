@@ -19,18 +19,21 @@ MosquitoSim/
 ├── unity/
 │   ├── Packages/manifest.json        # Unity 6 LTS, ML-Agents 4.1.0
 │   └── Assets/Scripts/
-│       ├── Agent/                    # ObsLayout, ObsBuilder, MosquitoMotor, MosquitoAgent, Subgoal
-│       ├── Env/                      # RoomArea, SkinZone, SimSettings
-│       └── Editor/Stage0SceneBuilder.cs
+│       ├── Agent/                    # 에이전트, 모터, 관측, 서브골, 플래너, 지시문, 카메라, 사이드 채널
+│       ├── Env/                      # 방, 가구, 사람, 손, 모기장, 단서 물체, 후보 지점
+│       └── Editor/SceneBuilder.cs    # 메뉴 MosquitoSim > Build Main Scene
 ├── python/
-│   ├── mosquitosim/                  # obs_spec (관측 규격), subgoals (플래너 출력 파싱)
-│   ├── training/smoke_test.py        # 랜덤 정책 스모크 테스트
-│   ├── evaluation/
-│   └── tests/                        # 규격 테스트, C# 관측 순서 대조
-├── configs/stage0.yaml               # PPO + 착지 커리큘럼
+│   ├── mosquitosim/                  # 관측 규격, 플래너 지시, 채널, 지연, ONNX 정책, 프롬프트
+│   ├── training/smoke_test.py
+│   ├── evaluation/                   # evaluate.py, eval_loop.py, metrics.py
+│   ├── planner_server/               # VLM 서버 (transformers / vLLM / mock)
+│   └── tests/
+├── configs/stage0~2.yaml             # PPO, 커리큘럼, 단계별 설정
 ├── scripts/run_stage.sh              # 단계별 학습, 시드 여러 개
-└── docs/                             # 규격, 설정 안내, AI 활용 기록
+└── docs/                             # 규격, 설계, 설정 안내, AI 활용 기록
 ```
+
+설계 설명은 [docs/architecture.md](docs/architecture.md)에 있습니다.
 
 ## 빠른 시작
 

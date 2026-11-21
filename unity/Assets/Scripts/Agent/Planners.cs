@@ -1,0 +1,170 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace MosquitoSim
+{
+    /// <summary>What a planner may look at when deciding.</summary>
+    public class PlannerContext
+    {
+        public int Stage;
+        public float SimTime;
+        public Vector3 MosquitoPos;
+        public bool Landed;
+        public float FeedProgress;
+        public float FeedTime;
+        public HumanController Human;
+        public HandController Hand;
+        public List<Candidate> Candidates;
+        public HashSet<string> ExcludedSkins;
+        public PlannerCommand Current;
+
+        public IEnumerable<SkinZone> AllowedSkins()
+        {
+            foreach (var s in Human.skins)
+                if (ExcludedSkins == null || !ExcludedSkins.Contains(s.id)) yield return s;
+        }
+    }
+
+    /// <summary>
+    /// Planners that run inside Unity. Fixed and Rule never look at
+    /// SkinZone.covered or traps: in the new-object evaluation those are the
+    /// cues only the image shows. Their single fallback is that a skin whose
+    /// APPROACH timed out is excluded for the rest of the episode.
+    /// </summary>
+    public static class Planners
+    {
+        public const float ThreatDistance = 1.0f;
+
+        /// <summary>Baseline: APPROACH the nearest allowed skin.</summary>
+        public static PlannerCommand Fixed(PlannerContext c)
+        {
+            SkinZone s = Nearest(c, c.AllowedSkins());
+            if (s == null)
+            {
+                c.ExcludedSkins?.Clear();
+                s = Nearest(c, c.Human.skins);
+            }
+            return new PlannerCommand(Subgoal.Approach, s.id);
+        }
+
+        /// <summary>
+        /// Rule planner (docs/interface.md): hand within 1 m and active -> EVADE;
+        /// alert -> HIDE at the nearest hidden candidate (else the nearest one
+        /// behind the gaze); straight line to the target skin blocked -> MOVE_TO
+        /// the nearest candidate the mosquito can reach in a straight line and
+        /// that has a clear line to the human; else APPROACH
+        /// the skin farthest from the hand (stage 2+) or the nearest skin.
+        /// </summary>
+        public static PlannerCommand Rule(PlannerContext c)
+        {
+            if (c.Stage >= 2 && c.Hand.Active && Vector3.Distance(c.Hand.Position, c.MosquitoPos) < ThreatDistance)
+                return new PlannerCommand(Subgoal.Evade, null);
+
+            if (c.Stage >= 2 && c.Human.Alert && c.Candidates.Count > 0)
+            {
+                Candidate? best = null;
+                foreach (var k in c.Candidates)
+                    if (k.Hidden && (best == null || k.Dist < best.Value.Dist)) best = k;
+                if (best == null)
+                {
+                    foreach (var k in c.Candidates)
+                    {
+                        bool behind = Vector3.Dot(k.Pos - c.Human.HeadPos, c.Human.GazeDir) < 0f;
+                        if (behind && (best == null || k.Dist < best.Value.Dist)) best = k;
+                    }
+                }
+                if (best == null) best = NearestCandidate(c, false);
+                if (best != null) return new PlannerCommand(Subgoal.Hide, best.Value.Id);
+            }
+
+            SkinZone skin = null;
+            if (c.Stage >= 2)
+            {
+                float far = -1f;
+                foreach (var s in c.AllowedSkins())
+                {
+                    float d = Vector3.Distance(s.Center, c.Hand.Position);
+                    if (d > far) { far = d; skin = s; }
+                }
+            }
+            if (skin == null) skin = Nearest(c, c.AllowedSkins());
+            if (skin == null)
+            {
+                c.ExcludedSkins?.Clear();
+                skin = Nearest(c, c.Human.skins);
+            }
+
+            bool blocked = Physics.Linecast(c.MosquitoPos, skin.Center, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore);
+            if (blocked && c.Candidates.Count > 0)
+            {
+                // Waypoint: a point the mosquito can fly to in a straight line and
+                // that has a clear line to the human. Without the first check the
+                // rule kept picking a point behind the same obstacle (run02).
+                Candidate? open = null;
+                foreach (var k in c.Candidates)
+                {
+                    if (!k.ClearPath || k.Dist <= SubgoalConstants.MoveToRadius) continue;
+                    if (Physics.Linecast(c.MosquitoPos, k.Pos, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore)) continue;
+                    if (open == null || k.Dist < open.Value.Dist) open = k;
+                }
+                if (open == null) open = NearestCandidate(c, true);
+                if (open != null && open.Value.Dist > SubgoalConstants.MoveToRadius)
+                    return new PlannerCommand(Subgoal.MoveTo, open.Value.Id);
+            }
+            return new PlannerCommand(Subgoal.Approach, skin.id);
+        }
+
+        /// <summary>
+        /// Training planner. Stage 0: APPROACH a random skin. Stage 1: APPROACH /
+        /// HIDE / MOVE_TO uniformly. Stage 2+: the same, and EVADE half of the
+        /// time while the hand is active.
+        /// </summary>
+        public static PlannerCommand Random(PlannerContext c, System.Random rng)
+        {
+            var skins = c.Human.skins;
+            if (c.Stage <= 0 || c.Candidates.Count == 0)
+                return new PlannerCommand(Subgoal.Approach, skins[rng.Next(skins.Count)].id);
+
+            if (c.Stage >= 2 && c.Hand.Active && rng.NextDouble() < 0.5)
+                return new PlannerCommand(Subgoal.Evade, null);
+
+            switch (rng.Next(3))
+            {
+                case 0:
+                    return new PlannerCommand(Subgoal.Approach, skins[rng.Next(skins.Count)].id);
+                case 1:
+                {
+                    var hidden = new List<Candidate>();
+                    foreach (var k in c.Candidates) if (k.Hidden) hidden.Add(k);
+                    var pool = hidden.Count > 0 ? hidden : c.Candidates;
+                    return new PlannerCommand(Subgoal.Hide, pool[rng.Next(pool.Count)].Id);
+                }
+                default:
+                    return new PlannerCommand(Subgoal.MoveTo, c.Candidates[rng.Next(c.Candidates.Count)].Id);
+            }
+        }
+
+        static SkinZone Nearest(PlannerContext c, IEnumerable<SkinZone> skins)
+        {
+            SkinZone best = null;
+            float bestD = float.MaxValue;
+            foreach (var s in skins)
+            {
+                float d = Vector3.Distance(s.Center, c.MosquitoPos);
+                if (d < bestD) { bestD = d; best = s; }
+            }
+            return best;
+        }
+
+        static Candidate? NearestCandidate(PlannerContext c, bool requireClearPath)
+        {
+            Candidate? best = null;
+            foreach (var k in c.Candidates)
+            {
+                if (requireClearPath && !k.ClearPath) continue;
+                if (best == null || k.Dist < best.Value.Dist) best = k;
+            }
+            return best;
+        }
+    }
+}

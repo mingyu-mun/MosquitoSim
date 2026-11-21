@@ -38,3 +38,16 @@ replay/
 # OS
 .DS_Store
 Thumbs.db
+
+# Auto test output (closed-loop runs)
+unity/AutoTest/
+
+# Licensed third-party assets (Mixamo, Asset Store, Sketchfab): not redistributable
+unity/Assets/ThirdParty/
+unity/Assets/ThirdParty.meta
+unity/Assets/Furniture Mega Pack/
+unity/Assets/Furniture Mega Pack.meta
+
+# ML-Agents runtime timers (written on every Play)
+unity/Assets/ML-Agents/
+unity/Assets/ML-Agents.meta

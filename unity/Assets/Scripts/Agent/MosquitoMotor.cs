@@ -9,6 +9,7 @@ namespace MosquitoSim
         public SkinZone HitSkin;   // set if the collision was with a skin zone
         public bool JustLanded;
         public bool TookOff;
+        public bool HitTrap;       // touched a sticky trap: the episode fails
     }
 
     /// <summary>
@@ -20,7 +21,7 @@ namespace MosquitoSim
     {
         public float bodyRadius = 0.003f;
         public float contactOffset = 0.001f;
-        public LayerMask collisionMask = ~0;
+        public LayerMask collisionMask = ~(1 << 9); // everything but the Labels layer
 
         [Tooltip("Action component along the skin normal needed to take off")]
         public float takeoffThreshold = 0.5f;
@@ -93,6 +94,14 @@ namespace MosquitoSim
                 if (Physics.SphereCast(pos, bodyRadius, dir, out RaycastHit hit, dist + contactOffset,
                         collisionMask, QueryTriggerInteraction.Ignore))
                 {
+                    if (hit.collider.GetComponentInParent<StickyTrap>() != null)
+                    {
+                        transform.position = pos + dir * Mathf.Max(hit.distance - contactOffset, 0f);
+                        Velocity = Vector3.zero;
+                        result.HitTrap = true;
+                        return result;
+                    }
+
                     var skin = hit.collider.GetComponentInParent<SkinZone>();
                     if (skin != null && skin == landingTarget && v.magnitude <= landingSpeed)
                     {

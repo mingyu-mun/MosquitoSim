@@ -1,0 +1,7 @@
+# VLM planner server (GPU machine). Separate from requirements.txt because
+# mlagents 1.1.0 pins old numpy/protobuf; run the server in its own venv.
+torch
+transformers>=4.57   # Qwen3-VL support
+accelerate
+pillow
+# vllm               # optional: `vllm serve <model>` + server.py --backend openai

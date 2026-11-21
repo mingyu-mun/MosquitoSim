@@ -1,4 +1,4 @@
-# Stage 0: empty room, standing human, subgoal fixed to APPROACH.
+# Stage 0: empty room, standing human, APPROACH only (a random skin each episode).
 # mlagents-learn configs/stage0.yaml --run-id stage0_s<seed> --seed <seed> --env <build> \
 #   --no-graphics --time-scale 20 --num-envs 4
 # Or use scripts/run_stage.sh.
@@ -30,7 +30,8 @@ behaviors:
 
 environment_parameters:
   stage: 0.0
-  planner: 0.0              # 0 fixed (APPROACH) - see Subgoal.cs PlannerKind
+  env_split: 0.0            # train (SplitConfig.cs EnvSplit)
+  planner: 1.0              # random training planner; stage 0 = APPROACH a random skin (Subgoal.cs PlannerKind)
   time_penalty: 0.005       # per simulated second
 
   # Landing is narrowed by curriculum: 6 cm / 0.6 m/s / 1 s feeding at the

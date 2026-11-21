@@ -3,15 +3,22 @@ using UnityEngine;
 namespace MosquitoSim
 {
     /// <summary>
-    /// A skin area on the human that the mosquito can land on (head, forearms,
-    /// calves). Use a primitive collider (sphere, capsule, box): landing uses
-    /// Collider.ClosestPoint, which needs a convex shape.
+    /// A skin area on the human that the mosquito can land on. IDs are fixed
+    /// per human: S1 head, S2 left forearm, S3 right forearm, S4 left calf,
+    /// S5 right calf. Use a primitive collider (sphere, capsule, box): landing
+    /// uses Collider.ClosestPoint, which needs a convex shape.
     /// </summary>
     [RequireComponent(typeof(Collider))]
     public class SkinZone : MonoBehaviour
     {
+        [Tooltip("Planner ID, S1..S5")]
+        public string id = "S1";
+
         [Tooltip("Name used in the language instruction, e.g. 왼팔")]
         public string zoneName = "skin";
+
+        [Tooltip("Covered by a blanket or sleeve (new-object evaluation): no landing")]
+        public bool covered;
 
         Collider m_Collider;
 
