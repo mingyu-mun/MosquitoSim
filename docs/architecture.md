@@ -178,6 +178,7 @@ python python/evaluation/metrics.py results/eval --baseline rule
 
 - **검증한 것:** Python 테스트 53개(관측 규격, C# 상수 대조, 플래너 응답 파싱, 가짜 환경으로 평가 루프·지연 주입·할당량·무효 응답·에피소드 경계, 모의 플래너 서버 왕복, 부트스트랩, ONNX 정책). C#은 Unity·ML-Agents API를 흉내 낸 스텁으로 형식 검사만 했습니다. 사이드 채널 코드는 실제 `mlagents_envs` 1.1.0 패키지로 송수신을 확인했습니다.
 - **Unity에서 확인한 것(11/21):** Unity 6000.3.29f1 + URP 17.3에서 컴파일 오류 0, 씬 생성, Play, 2단계 규칙 플래너 자동 조종(에피소드 대부분 성공), 관측 이상 0. 자동 테스트 루프(`AutoTest/request.txt`)로 확인했습니다.
+- **Windows 빌드에서 확인한 것(11/22, RTX 5070 PC, Windows 11, Python 3.10.11, 외부 에셋 없이 도형 사람·구 모기):** 에디터 컴파일 오류 0, 씬 생성, Windows 플레이어 빌드(147초, 125 MB), `smoke_test.py` 통과(관측 59, 값 이상 0, 방 16개 한 빌드에서 6,395 decisions/s), `mlagents-learn`이 빌드 4개에 연결해 0단계 학습 시작(`--no-graphics --time-scale 20 --num-envs 4`, CPU 학습, 51초에 24만 스텝 = 약 4,700 steps/s). 첫 체크포인트(25만 스텝) 저장은 torch 2.14.1에서 실패해 `requirements.txt`에 `torch==2.2.2`를 고정했습니다. 고정한 뒤의 내보내기는 Linux에서만 확인했고, Windows 재실행과 0단계 수렴 여부는 아직 확인 전입니다.
 - **아직 Unity에서 확인할 것:** 빌드 + `smoke_test.py`, 사이드 채널이 첫 리셋 전에 설정을 받는지, 첫 `OnEpisodeBegin`이 환경 파라미터를 받은 뒤에 불리는지, 세트 B 가구의 정면 방향.
 - **아직 없는 것:** 잠재 텐서 C 방식 백엔드, 모기향(3단계), 결정 장면 재생 벤치마크(`latency/replay_bench.py`), 그림 스크립트.
 - **조정할 값:** 손 반응·속도, 경계 조건, 착지 커리큘럼 기준(보상 0.8), 후보 수와 비율. 모두 pilot에서 정합니다.
