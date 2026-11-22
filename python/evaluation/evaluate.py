@@ -38,13 +38,15 @@ class MLAgentsEnv:
         from mlagents_envs.environment import UnityEnvironment
         from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
         from mlagents_envs.side_channel.environment_parameters_channel import EnvironmentParametersChannel
+        from mlagents_envs.side_channel.stats_side_channel import StatsSideChannel
 
         self.queue = MessageQueue()
         self.channel = make_side_channel(self.queue)
         engine = EngineConfigurationChannel()
         env_params = EnvironmentParametersChannel()
         self.env = UnityEnvironment(file_name=file_name, seed=seed, no_graphics=no_graphics,
-                                    side_channels=[engine, env_params, self.channel], base_port=port)
+                                    side_channels=[engine, env_params, self.channel, StatsSideChannel()],
+                                    base_port=port)
         engine.set_configuration_parameters(time_scale=time_scale)
         for k, v in params.items():
             env_params.set_float_parameter(k, float(v))
