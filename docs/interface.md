@@ -23,7 +23,7 @@
 | 0 | 3 | self_velocity | 속도 / 1.5 | |
 | 3 | 3 | target_skin_rel_pos | (목표 피부 영역 중심 − 모기) / 5, [−1, 1]로 자름 | |
 | 6 | 1 | target_skin_dist | 거리 / 5, 최대 1 | |
-| 7 | 3 | subgoal_target_rel_pos | (서브골 목표 지점 − 모기) / 5 | |
+| 7 | 3 | subgoal_target_rel_pos | (서브골 목표 지점 − 모기) / 5. MOVE_TO·HIDE는 우회 경로의 경유점(아래 "우회 경로") | |
 | 10 | 1 | subgoal_target_dist | 거리 / 5 | |
 | 11 | 3 | human_velocity | 사람 속도 / 2 | 0~1단계 |
 | 14 | 1 | human_alert | 경계 0/1 | 0~1단계 |
@@ -73,6 +73,20 @@
 | 2 | EVADE | 위험 지점(손, 모기향). 2단계부터 | 1.5m 이상 | 거리 증가 × 0.1, 달성 +0.3 |
 | 3 | MOVE_TO | 고른 후보 지점(P1~P8) | 0.15m 이내 도달(멈출 필요 없음) | 거리 감소 × 0.1, 달성 +0.3 |
 
+MOVE_TO·HIDE의 "거리 감소"는 직선 거리가 아니라 우회 경로의 남은 길이로 잽니다(아래).
+
+### 우회 경로 (MOVE_TO·HIDE, 11/22)
+
+정책은 목표 방향과 2 m 레이만 보고 기억이 없어서, 목표가 가구·모기장·벽 뒤에 있으면 직선 방향으로 밀다가 막혀 멈춥니다(1단계 정책 평가에서 MOVE_TO 139건 중 달성 2건, 충돌 수천 회). 그래서 MOVE_TO·HIDE는 길찾기 결과를 정책에 줍니다.
+
+- 방마다 0.2 m 칸의 빈 공간 격자를 만듭니다(`NavGrid`). 반지름 0.105 m 구가 벽·가구·장식·모기장·트랩에 닿지 않는 칸이 빈 칸입니다. 사람은 움직이므로 장애물로 치지 않습니다(레이로 봄).
+- 모기에서 목표까지 상하좌우앞뒤 6방향 A* 경로를 0.5초마다 다시 찾습니다. 6방향만 쓰므로 모기장 같은 얇은 면을 통과하는 경로는 나오지 않습니다.
+- 경로를 따라 1.5 m 안에서 모기가 직선으로 날아갈 수 있는(구 반지름 0.02 m로 막힘 검사) 가장 먼 점을 경유점으로 골라 `subgoal_target_rel_pos`·`subgoal_target_dist`에 넣습니다. 목표가 직선으로 보이면 경유점이 곧 목표입니다.
+- 진행 보상은 경로의 남은 길이 감소로 주고, 한 스텝에 날 수 있는 거리(×1.5)로 자릅니다(재탐색으로 길이가 갑자기 줄어도 보상이 튀지 않게).
+- 달성 판정은 그대로 실제 목표 지점 기준입니다. 경로가 없으면(목표 근처에 빈 칸이 없음 등) 예전처럼 목표를 직접 줍니다.
+- APPROACH와 EVADE는 바뀌지 않았습니다. 모기장 안 피부로 가는 길(열린 면 찾기)은 여전히 플래너가 MOVE_TO로 정해야 합니다.
+- 환경 파라미터 `path_guide`(기본 1)로 끌 수 있습니다. 끄면 예전 동작(직선)입니다.
+
 공통: 잡힘 −1, 모기향 노출 초과 −1, 충돌 −0.01(스텝당), 시간 −0.005/초.
 
 교체 규칙(학습): 달성, 실패, 시간 초과(8초) 때 교체. 결정마다 평균 5초에 한 번 무작위 중간 교체. 흡혈 중에는 무작위 중간 교체를 하지 않지만, 2단계부터 위협 사건(손 활성 등) 때의 사건 교체는 착지 중에도 허용합니다(최종 점검 1-2).
@@ -92,12 +106,13 @@
 
 HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅니다. 직접 지정 점검(`planner=4`, HIDE)과 플래너 평가(`evaluate.py --scenario hide`, Unity `hide_scenario=1`)가 같은 시나리오를 씁니다. 1단계부터 쓸 수 있습니다.
 
-1. 모기가 사람 머리에서 0.5~1.0 m, 머리에서 보이는 곳에서 시작합니다. 사람은 모기 소리를 들은 상태(경계)입니다.
-2. 플래너가 숨을 곳(HIDE + P1~P8)을 고릅니다. 고르는 동안(VLM 계산 포함) 모기와 사람은 멈춰 있습니다. 지시문에는 "[지금] … HIDE로 골라라"와 HIDE 출력 형식만 들어갑니다(`view.situation = "hide"`). HIDE가 아닌 응답은 무시하고, 10초 안에 유효한 선택이 없으면 모기는 그 자리에 있는 채로 다음 단계가 시작됩니다(`probe_valid = false`).
-3. 선택이 적용되면 사람이 소리 난 쪽(모기 시작 위치)으로 1초에 걸쳐 몸을 돌린 뒤 머리를 훑으며 둘러봅니다. 경계 시간은 3~5초입니다.
-4. 발견되면 실패(`spotted`), 경계가 끝나면 성공(`achieved`). 잡히거나 트랩에 닿아도 실패입니다.
+1. 모기가 사람 머리에서 0.5~1.0 m, 머리에서 보이는 곳에서 시작합니다. 사람은 모기 소리를 들은 상태지만 아직 둘러보지 않습니다.
+2. 플래너가 숨을 곳(HIDE + P1~P8)을 고릅니다. 고르는 동안(VLM 계산 포함) 모기와 사람은 멈춰 있습니다. 지시문에는 "[지금] … HIDE로 골라라"와 HIDE 출력 형식만 들어갑니다(`view.situation = "hide"`). HIDE가 아닌 응답은 무시하고, 10초 안에 유효한 선택이 없으면 모기는 그 자리에 있는 채로 4단계가 바로 시작됩니다(`probe_valid = false`).
+3. 선택이 적용되면 모기가 숨을 곳으로 날아갑니다. 이 동안 사람은 정지해 있고(STOP) 둘러보지 않으며 발견도 하지 않습니다. 지점 0.15 m 안에 도착하면(`probe_arrived = true`) 다음 단계로 갑니다. 8초 안에 도착하지 못하면 그 자리에서 다음 단계로 갑니다(`probe_arrived = false`). 걸린 시간은 `probe_travel`.
+4. 사람이 경계를 시작합니다. 소리 난 쪽(모기 시작 위치)으로 1초에 걸쳐 몸을 돌린 뒤 머리를 훑으며 둘러봅니다. 경계 시간은 3~5초입니다.
+5. 경계 중 발견되면 실패(`spotted`), 경계가 끝나면 성공(`achieved`). 잡히거나 트랩에 닿아도 실패입니다. `probe_time`은 4단계 시작부터 잽니다.
 
-점검(정답 선택)은 하위 정책의 통과 기준, `--scenario hide`의 조건별 결과(`hide-<조건>`)는 플래너 비교에 씁니다. 숨을 곳이 실제로 가려졌는지(`probe_target_hidden`)도 함께 기록되므로, 실패가 선택 탓인지 실행 탓인지 나눠 볼 수 있습니다.
+점검(정답 선택)은 하위 정책의 통과 기준, `--scenario hide`의 조건별 결과(`hide-<조건>`)는 플래너 비교에 씁니다. `metrics.py --probe`는 HIDE에 대해 가려진 곳을 고른 비율(`chose_hidden`, `probe_target_hidden`), 도착 비율(`arrived`), 도착했을 때 성공률(`achieved_if_arrived`)을 따로 내므로, 실패가 선택 탓인지 실행 탓인지 나눠 볼 수 있습니다. 정답 선택 점검에서 방에 가려진 후보가 하나도 없어 가려지지 않은 후보가 주어진 에피소드는 하위 정책을 시험할 수 없으므로 달성률에서 빼고 `skipped_no_hidden`으로 셉니다.
 
 ## 사람의 경계 (11/22)
 
@@ -105,7 +120,7 @@ HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅�
 - 경계 중에는 제자리에 멈추고(걷기 중단), 윙윙거림으로 시작한 경계면 먼저 소리 난 쪽으로 1초에 걸쳐 몸을 돌린 뒤, 머리를 좌우 ±60°로 훑습니다(한 방향에 1초). 3~5초(경계마다 무작위)가 지나면 평온으로 돌아가 걷기를 이어 갑니다.
 - 발견: 모기가 머리 방향 ±60° 안에 있고 머리에서의 시선이 막히지 않으면(거리 제한 없음). 발견하면 모기를 계속 보고 경계 시간이 처음부터 다시 시작됩니다.
 - 공격: 발견한 상태에서 모기가 어깨에서 0.9 m 안이면 휘두르기 시작(반응 지연: 학습 0.3~0.5초, new_human 0.15~0.3초). 손이 닿지 않으면 제자리에서 지켜봅니다(11/22 추천안으로 구현, 확인 필요).
-- 후보의 `hidden`은 시야각과 상관없이 머리에서 시선이 막혔는지만 봅니다.
+- 후보의 `hidden`은 시야각과 상관없이 머리에서 시선이 막혔는지만 봅니다. 지점 하나가 아니라 HIDE 도착 반경(0.15 m) 전체가 가려져야 `hidden = true`입니다(중심과 주변 14방향 점, 11/22). 가구 모서리에 걸친 지점은 도착 반경 끝이 보이므로 가려진 곳으로 치지 않습니다.
 
 ## 단계별 학습 서브골
 
@@ -124,6 +139,7 @@ HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅�
 | planner | 0 fixed, 1 random(학습), 2 rule(Unity 안, 정답 규칙), 3 external(평가: Python이 조건별로 답함), 4 probe(직접 지정 점검) | `EnvParams` |
 | probe_subgoal | planner=4일 때 점검할 서브골. −1 단계의 서브골을 순환, 0 APPROACH, 1 HIDE, 2 EVADE, 3 MOVE_TO | `EnvParams` |
 | hide_scenario | planner=3일 때 1이면 모든 에피소드가 HIDE 시나리오 | `EnvParams` |
+| path_guide | 1(기본)이면 MOVE_TO·HIDE가 우회 경로의 경유점을 받음, 0이면 직선 목표 | `EnvParams` |
 | eval_seed | 정수. 검증·평가 에피소드의 배치를 정함 | `EnvParams` |
 | landing_radius | 착지 허용 거리(m), 커리큘럼 0.06 → 0.02 | `EnvParams` |
 | landing_speed | 착지 허용 속도(m/s), 0.6 → 0.3 | `EnvParams` |
@@ -167,7 +183,7 @@ HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅�
 | Python → Unity | command | room, episode, decision, command. 다른 에피소드의 지시는 무시 |
 | Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command |
 | Unity → Python | decision | request와 같은 필드 + command (Unity 안 플래너의 로그) |
-| Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait |
+| Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait·probe_travel·probe_arrived |
 
 에피소드 ID는 `<분할>/s<평가 시드>/r<방>e<방의 에피소드 번호>`입니다.
 

@@ -59,14 +59,15 @@ namespace MosquitoSim
 
         // Direct subgoal check (planner = Probe): one subgoal per episode, 8 s.
         const float k_HideStartMin = 0.5f, k_HideStartMax = 1.0f; // HIDE scenario: start this far from the head
-        const float k_HideMaxWait = 10f;                           // HIDE scenario: search starts anyway after this
+        const float k_HideMaxWait = 10f;                           // HIDE scenario: no valid choice by then -> search with the mosquito held
+        const float k_HideMaxTravel = 8f;                          // HIDE scenario: search starts anyway if the spot is not reached by then
         const float k_ProbeHandMin = 0.4f, k_ProbeHandMax = 0.6f;  // EVADE: start this far from the hand
         const float k_ProbeSwingDelay = 0.5f;                       // EVADE: the hand swings after this
         bool m_Probe, m_ProbeStarted, m_ProbeDone, m_ProbeTargetHidden, m_ProbePathBlocked;
         // HIDE scenario (probe HIDE, or planner evaluation with hide_scenario): frozen until a HIDE choice,
         // then the human turns toward the buzzing and looks around; spotted = fail, alert over = success.
-        bool m_HideScenario, m_Searching, m_ProbeValid;
-        float m_WaitStart, m_SearchStart, m_ProbeWait;
+        bool m_HideScenario, m_Chosen, m_Searching, m_ProbeValid, m_ProbeArrived;
+        float m_WaitStart, m_TravelStart, m_SearchStart, m_ProbeWait, m_ProbeTravel;
         Vector3 m_SoundPos;
         Subgoal m_ProbeSubgoal;
         string m_ProbeTarget, m_ProbeOutcome;
@@ -75,6 +76,10 @@ namespace MosquitoSim
         public PlannerCommand CurrentCommand => m_Tracker.Command;
         public float SimTime => m_SimTime;
         public Vector3 SubgoalTarget => m_Tracker.Target;
+        /// <summary>Point the policy is steered to: a route waypoint for MOVE_TO / HIDE, else the target.</summary>
+        public Vector3 GuideTarget => m_Guide.Active ? m_Guide.Waypoint : m_Tracker.Target;
+        readonly PathGuide m_Guide = new PathGuide();
+        bool Guided => m_P.PathGuide && (m_Tracker.Command.Subgoal == Subgoal.MoveTo || m_Tracker.Command.Subgoal == Subgoal.Hide);
         public float FeedTimer => m_FeedTimer;
         public bool Landed => m_Motor != null && m_Motor.IsLanded;
         public Vector3 Velocity => m_Motor != null ? m_Motor.Velocity : Vector3.zero;
@@ -84,11 +89,18 @@ namespace MosquitoSim
 
         /// <summary>Episode outcome counts across all agents (read by AutoTestRunner).</summary>
         public static int Episodes, Successes, Caught, Trapped, Decisions;
+        /// <summary>Auto-test report: guided steps, and those without a route (fell back to straight line).</summary>
+        public static int GuidedSteps, UnroutedSteps;
         /// <summary>Direct subgoal checks per subgoal wire name: trials, achieved, seconds to achieve.</summary>
         public static readonly Dictionary<string, Vector3> ProbeStats = new Dictionary<string, Vector3>();
+        /// <summary>Auto-test report: "SUBGOAL/outcome" -> (count, summed seconds).</summary>
+        public static readonly Dictionary<string, Vector2> ProbeOutcomes = new Dictionary<string, Vector2>();
+        /// <summary>Auto-test report: first HIDE episodes in detail.</summary>
+        public static readonly List<string> HideTrace = new List<string>();
+        float m_SearchAngle;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = 0; ProbeStats.Clear(); }
+        static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = GuidedSteps = UnroutedSteps = 0; ProbeStats.Clear(); ProbeOutcomes.Clear(); HideTrace.Clear(); }
 
         public override void Initialize()
         {
@@ -149,7 +161,7 @@ namespace MosquitoSim
             {
                 Velocity = m_Motor.Velocity,
                 TargetSkinRel = (m_TargetSkin != null ? m_TargetSkin.Center : m_Tracker.Target) - pos,
-                SubgoalTargetRel = m_Tracker.Target - pos,
+                SubgoalTargetRel = GuideTarget - pos,
                 HumanVelocity = dynamic ? human.Velocity : Vector3.zero,
                 HumanAlert = dynamic && human.Alert,
                 HandActive = dynamic && hand.Active,
@@ -176,10 +188,10 @@ namespace MosquitoSim
             // Apply commands that arrived from Python since the last step.
             PollExternal();
 
-            if (m_HideScenario && !m_Searching)
+            if (m_HideScenario && !m_Chosen)
             {
                 // Waiting for the HIDE choice: mosquito and human hold still.
-                if (m_SimTime - m_WaitStart > k_HideMaxWait) BeginHideSearch(null);
+                if (m_SimTime - m_WaitStart > k_HideMaxWait) ChooseHide(null);
                 else return;
             }
 
@@ -228,7 +240,17 @@ namespace MosquitoSim
 
             if (m_HideScenario && !m_ProbeDone)
             {
-                if (m_ProbeValid) m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, Vector3.Distance(pos, m_Tracker.Target));
+                float d = Vector3.Distance(pos, m_Tracker.Target);
+                if (m_ProbeValid) m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, d);
+                if (!m_Searching)
+                {
+                    // The mosquito flies to its spot while the human stands still; the alert starts on arrival.
+                    bool arrived = m_ProbeValid && d <= SubgoalConstants.HideRadius;
+                    if (arrived || !m_ProbeValid || m_SimTime - m_TravelStart > k_HideMaxTravel) BeginHideSearch(arrived);
+                }
+            }
+            if (m_HideScenario && m_Searching && !m_ProbeDone)
+            {
                 string outcome = human.Spotted ? "spotted" : !human.Alert ? "achieved" : null;
                 if (outcome != null)
                 {
@@ -240,8 +262,8 @@ namespace MosquitoSim
 
             // Subgoal shaping and end
             m_Tracker.UpdateTarget(ResolveTarget(m_Tracker.Command, null));
-            if (!m_Motor.IsLanded) AddReward(k_ProgressCoef * m_Tracker.Shaping(pos));
-            else m_Tracker.Shaping(pos);
+            float progress = UpdateGuide(pos);
+            if (!m_Motor.IsLanded) AddReward(k_ProgressCoef * progress);
             bool hazard = m_Stage >= 2 && hand.Active;
             SubgoalStatus status = m_Tracker.Step(m_SimTime, dt, pos, m_Motor.IsLanded, hazard);
             if (status != SubgoalStatus.Running && m_P.Planner == PlannerKind.Random)
@@ -304,7 +326,7 @@ namespace MosquitoSim
                 Candidates = m_Area.Candidates.Current,
                 ExcludedSkins = m_Excluded,
                 Current = m_Tracker.Command,
-                HideSituation = m_HideScenario && !m_Searching,
+                HideSituation = m_HideScenario && !m_Chosen,
             };
         }
 
@@ -457,7 +479,7 @@ namespace MosquitoSim
             while (ch.TryDequeue(m_Area.roomIndex, out PlannerInMessage m))
             {
                 if (m.episode != m_EpisodeId) continue; // answer to a previous episode
-                if (m_HideScenario && m_Searching) continue; // one choice per HIDE scenario
+                if (m_HideScenario && m_Chosen) continue; // one choice per HIDE scenario
                 if (!PlannerCommand.TryFromDto(m.command, out PlannerCommand cmd)) continue;
                 m_Snapshots.TryGetValue(m.decision, out List<Candidate> snapshot);
                 if (!IsValidTarget(cmd, snapshot)) continue;
@@ -490,7 +512,13 @@ namespace MosquitoSim
                 if (skin != null) m_TargetSkin = skin;
             }
             m_Tracker.Set(cmd, ResolveTarget(cmd, snapshot), m_SimTime, transform.position);
-            if (m_HideScenario && !m_Searching && cmd.Subgoal == Subgoal.Hide) BeginHideSearch(snapshot);
+            m_Guide.Reset();
+            if (Guided)
+            {
+                m_Guide.Update(m_Area.Nav, transform.position, m_Tracker.Target, m_SimTime);
+                m_Tracker.Shaping(m_Guide.Remaining); // start shaping from the route length
+            }
+            if (m_HideScenario && !m_Chosen && cmd.Subgoal == Subgoal.Hide) ChooseHide(snapshot);
         }
 
         Vector3 ResolveTarget(PlannerCommand cmd, List<Candidate> snapshot)
@@ -559,7 +587,9 @@ namespace MosquitoSim
                         .Key("probe_target_hidden").Value(m_ProbeTargetHidden)
                         .Key("probe_spotted").Value((m_Stage >= 2 || m_HideScenario) && m_Area.human.SpottedEver)
                         .Key("probe_valid").Value(!m_HideScenario || m_ProbeValid)
-                        .Key("probe_wait").Value(m_ProbeWait);
+                        .Key("probe_wait").Value(m_ProbeWait)
+                        .Key("probe_travel").Value(m_ProbeTravel)
+                        .Key("probe_arrived").Value(m_ProbeArrived);
                 }
                 j.EndObject();
                 ch.Send(j.ToString());
@@ -581,8 +611,8 @@ namespace MosquitoSim
             m_ProbeStarted = m_ProbeDone = false;
             m_ProbeOutcome = null;
             m_ProbeTarget = null;
-            m_ProbeTime = m_ProbeHold = m_ProbeWait = 0f;
-            m_Searching = m_ProbeValid = false;
+            m_ProbeTime = m_ProbeHold = m_ProbeWait = m_ProbeTravel = 0f;
+            m_Chosen = m_Searching = m_ProbeValid = m_ProbeArrived = false;
 
             if (m_Probe)
             {
@@ -614,16 +644,29 @@ namespace MosquitoSim
             }
         }
 
-        /// <summary>HIDE scenario: the choice is in (or the wait ran out); the human turns and looks.</summary>
-        void BeginHideSearch(List<Candidate> snapshot)
+        /// <summary>HIDE scenario: the choice is in (or the wait ran out). The mosquito flies; the human stays still.</summary>
+        void ChooseHide(List<Candidate> snapshot)
         {
-            m_Searching = true;
+            m_Chosen = true;
             m_ProbeValid = snapshot != null;
             m_ProbeWait = m_SimTime - m_WaitStart;
-            m_SearchStart = m_SimTime;
+            m_TravelStart = m_SimTime;
             if (m_ProbeValid) StartProbe(snapshot);
             else { m_ProbeStarted = true; m_ProbeStartDist = m_ProbeMinDist = 0f; }
-            m_Area.human.BeginSearch(m_SoundPos);
+        }
+
+        /// <summary>HIDE scenario: the mosquito reached its spot (or ran out of time); the human turns and looks.</summary>
+        void BeginHideSearch(bool arrived)
+        {
+            m_Searching = true;
+            m_ProbeArrived = arrived;
+            m_ProbeTravel = m_SimTime - m_TravelStart;
+            m_SearchStart = m_SimTime;
+            var h = m_Area.human;
+            Vector3 toM = transform.position - h.HeadPos; toM.y = 0f;
+            Vector3 fwd = h.transform.forward; fwd.y = 0f;
+            m_SearchAngle = Vector3.Angle(fwd, toM);
+            h.BeginSearch(m_SoundPos);
         }
 
         /// <summary>A free point <paramref name="min"/>-<paramref name="max"/> m from <paramref name="center"/>,
@@ -699,8 +742,36 @@ namespace MosquitoSim
             s.x += 1f;
             if (outcome == "achieved") { s.y += 1f; s.z += m_ProbeTime; }
             ProbeStats[n] = s;
+            ProbeOutcomes.TryGetValue(n + "/" + outcome, out Vector2 o);
+            ProbeOutcomes[n + "/" + outcome] = new Vector2(o.x + 1f, o.y + m_ProbeTime);
+            if (m_HideScenario && HideTrace.Count < 12)
+                HideTrace.Add($"{outcome} {m_ProbeTime:0.00}s  도착 {(m_ProbeArrived ? "O" : "X")} 이동시간 {m_ProbeTravel:0.0}s  시작 시 몸 앞과 모기 각 {m_SearchAngle:0}°  " +
+                              $"목표까지 {m_ProbeStartDist:0.00}m → 최소 {m_ProbeMinDist:0.00}m  목표 가려짐 {(m_ProbeTargetHidden ? "O" : "X")}  " +
+                              $"이동 {Vector3.Distance(transform.position, m_SoundPos):0.00}m");
             var stats = Academy.Instance.StatsRecorder;
             stats.Add("Probe/" + n + "/Achieved", outcome == "achieved" ? 1f : 0f);
+        }
+
+        /// <summary>
+        /// MOVE_TO / HIDE: route around obstacles (NavGrid A*) and shape on the
+        /// route length, so a target behind furniture or the net is not a dead
+        /// end for a policy that only sees a straight-line direction. Other
+        /// subgoals shape on the straight distance as before. Returns the
+        /// shaping progress, clamped to what the mosquito can fly in one step
+        /// (a replan can shorten the route abruptly).
+        /// </summary>
+        float UpdateGuide(Vector3 pos)
+        {
+            if (!Guided)
+            {
+                if (m_Guide.Active) m_Guide.Reset();
+                return m_Tracker.Shaping(pos);
+            }
+            m_Guide.Update(m_Area.Nav, pos, m_Tracker.Target, m_SimTime);
+            GuidedSteps++;
+            if (!m_Guide.Active) UnroutedSteps++;
+            float step = ObsLayout.MaxSpeed * Time.fixedDeltaTime * 1.5f;
+            return Mathf.Clamp(m_Tracker.Shaping(m_Guide.Remaining), -step, step);
         }
 
         /// <summary>
@@ -711,7 +782,7 @@ namespace MosquitoSim
         Vector3 Autopilot()
         {
             Vector3 pos = transform.position;
-            Vector3 to = m_Tracker.Target - pos;
+            Vector3 to = GuideTarget - pos;
             float dist = to.magnitude;
             Vector3 dir = dist > 1e-4f ? to / dist : Vector3.zero;
             Vector3 desired;

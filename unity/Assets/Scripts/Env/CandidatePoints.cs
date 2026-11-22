@@ -59,7 +59,7 @@ namespace MosquitoSim
             {
                 Vector3 flat = p - human.transform.position;
                 flat.y = 0f;
-                if (flat.magnitude > 0.5f && !human.CanSee(p)) hidden.Add(p);
+                if (flat.magnitude > 0.5f && HiddenWithMargin(human, p)) hidden.Add(p);
             }
             hidden.Sort((a, b) => Vector3.Distance(a, mosquito).CompareTo(Vector3.Distance(b, mosquito)));
             foreach (var p in hidden)
@@ -120,11 +120,41 @@ namespace MosquitoSim
                     Id = "P" + (i + 1),
                     Pos = p,
                     Dist = Vector3.Distance(p, mosquito),
-                    Hidden = !human.CanSee(p),
+                    Hidden = HiddenWithMargin(human, p),
                     ClearPath = !Physics.Linecast(p, human.Chest, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore),
                     NearTrap = cues != null && cues.NearTrap(p, 0.2f),
                 });
             }
+        }
+
+        /// <summary>
+        /// A point counts as hidden only if the head cannot see it or any point
+        /// <see cref="SubgoalConstants.HideRadius"/> around it (6 axis + 8 diagonal
+        /// directions): HIDE arrives within that radius, so the whole arrival zone
+        /// must be out of sight.
+        /// </summary>
+        public static bool HiddenWithMargin(HumanController human, Vector3 p)
+        {
+            if (human.CanSee(p)) return false;
+            float r = SubgoalConstants.HideRadius;
+            foreach (var d in k_MarginDirs)
+                if (human.CanSee(p + d * r)) return false;
+            return true;
+        }
+
+        static readonly Vector3[] k_MarginDirs = BuildMarginDirs();
+
+        static Vector3[] BuildMarginDirs()
+        {
+            var dirs = new List<Vector3>
+            {
+                new Vector3(1, 0, 0), new Vector3(-1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, -1, 0), new Vector3(0, 0, 1), new Vector3(0, 0, -1),
+            };
+            for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+            for (int sz = -1; sz <= 1; sz += 2)
+                dirs.Add(new Vector3(sx, sy, sz).normalized);
+            return dirs.ToArray();
         }
 
         public bool TryGet(string id, out Candidate c)

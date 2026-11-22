@@ -126,3 +126,46 @@ def test_hide_scenario_runs_are_their_own_kind(tmp_path):
     assert by["hide-rule_masked"]["achieved"] == pytest.approx(0.3)
     assert all(o["passed"] is None for o in overall)  # pass verdicts are for the direct check only
     assert not [r for r in metrics.load_runs(tmp_path) if not metrics.is_check_run(r["condition"])]
+
+
+def test_probe_summary_separates_hide_choice_and_execution(tmp_path):
+    d = tmp_path / "hide-vlm__val__p1s1__measured"
+    d.mkdir()
+    cols = ["episode", "success", "caught", "trapped", "timeout", "sim_time", "room_type", "probe_subgoal",
+            "probe_outcome", "probe_time", "probe_path_blocked", "probe_target_hidden", "probe_arrived"]
+    # (outcome, chose a hidden spot, arrived)
+    eps = [("achieved", True, True)] * 3 + [("spotted", True, True)] + [("spotted", False, True)] * 2 + \
+          [("spotted", True, False)] * 4
+    with open(d / "episodes.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for i, (out, hidden, arrived) in enumerate(eps):
+            w.writerow({"episode": i, "success": "False", "caught": "False", "trapped": "False", "timeout": "False",
+                        "sim_time": 5.0, "room_type": "R5x4", "probe_subgoal": "HIDE", "probe_outcome": out,
+                        "probe_time": 4.0, "probe_path_blocked": "False", "probe_target_hidden": str(hidden),
+                        "probe_arrived": str(arrived)})
+    per_seed, _ = metrics.probe_summary(metrics.load_runs(tmp_path))
+    rec = per_seed[0]
+    assert rec["kind"] == "hide-vlm"
+    assert rec["chose_hidden"] == pytest.approx(0.8)
+    assert rec["arrived"] == pytest.approx(0.6)
+    assert rec["achieved_if_arrived"] == pytest.approx(0.5)
+
+
+def test_ground_truth_hide_without_hidden_spot_is_left_out(tmp_path):
+    d = tmp_path / "probe-HIDE__val__p1s1__measured"
+    d.mkdir()
+    cols = ["episode", "success", "caught", "trapped", "timeout", "sim_time", "room_type", "probe_subgoal",
+            "probe_outcome", "probe_time", "probe_path_blocked", "probe_target_hidden", "probe_arrived"]
+    eps = [("achieved", True)] * 4 + [("spotted", False)] * 2
+    with open(d / "episodes.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for i, (out, hidden) in enumerate(eps):
+            w.writerow({"episode": i, "success": "False", "caught": "False", "trapped": "False", "timeout": "False",
+                        "sim_time": 5.0, "room_type": "R5x4", "probe_subgoal": "HIDE", "probe_outcome": out,
+                        "probe_time": 4.0, "probe_path_blocked": "False", "probe_target_hidden": str(hidden),
+                        "probe_arrived": "True"})
+    per_seed, overall = metrics.probe_summary(metrics.load_runs(tmp_path))
+    assert per_seed[0]["n"] == 4 and per_seed[0]["skipped_no_hidden"] == 2
+    assert overall[0]["achieved_mean"] == 1.0

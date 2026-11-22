@@ -60,7 +60,8 @@ class FakeEnv:
         return {"probe_subgoal": "HIDE", "probe_target": "P3", "probe_outcome": "achieved" if ok else "timeout",
                 "probe_time": 2.5 if ok else 8.0, "probe_start_dist": 1.8, "probe_min_dist": 0.05 if ok else 0.6,
                 "probe_path_blocked": not ok, "probe_target_height": 1.0, "probe_target_hidden": True,
-                "probe_spotted": False}
+                "probe_spotted": False, "probe_valid": True, "probe_wait": 0.0,
+                "probe_travel": 2.0 if ok else 8.0, "probe_arrived": ok}
 
     # EnvAdapter
     def get_obs(self):

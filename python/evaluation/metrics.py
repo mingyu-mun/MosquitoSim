@@ -40,7 +40,10 @@ def load_runs(root: Path) -> List[dict]:
                              "probe_subgoal": r.get("probe_subgoal") or "",
                              "probe_outcome": r.get("probe_outcome") or "",
                              "probe_time": float(r.get("probe_time") or 0),
-                             "probe_path_blocked": _bool(r.get("probe_path_blocked"))})
+                             "probe_path_blocked": _bool(r.get("probe_path_blocked")),
+                             # None when the column is absent (older logs): not treated as "no hidden spot".
+                             "probe_target_hidden": _bool(r["probe_target_hidden"]) if r.get("probe_target_hidden") else None,
+                             "probe_arrived": _bool(r.get("probe_arrived"))})
     return rows
 
 
@@ -88,11 +91,17 @@ def probe_summary(rows: Iterable[dict]) -> Tuple[List[dict], List[dict]]:
     to "probe": mean over policy seeds >= PASS_RATE.
     """
     groups: Dict[Tuple[str, str, str, str], List[dict]] = defaultdict(list)
+    skipped: Dict[Tuple[str, str, str, str], int] = defaultdict(int)
     for r in rows:
         if not r["probe_subgoal"] or not is_check_run(r["condition"]):
             continue
         cond = r["condition"]
         kind = cond if cond.startswith("hide-") else ("probe-null" if cond.endswith("-null") else "probe")
+        if kind != "probe-null" and not kind.startswith("hide-") and r["probe_subgoal"] == "HIDE" \
+                and r["probe_target_hidden"] is not None and not r["probe_target_hidden"]:
+            # Ground-truth HIDE with no hidden candidate in the room: nothing to test, left out of the rate.
+            skipped[(r["split"], kind, r["probe_subgoal"], policy_seed(r["seed"]))] += 1
+            continue
         groups[(r["split"], kind, r["probe_subgoal"], policy_seed(r["seed"]))].append(r)
     per_seed = []
     for (split, kind, sub, pseed), rs in sorted(groups.items()):
@@ -101,11 +110,18 @@ def probe_summary(rows: Iterable[dict]) -> Tuple[List[dict], List[dict]]:
         times = [r["probe_time"] for r in rs if r["probe_outcome"] == "achieved"]
         blocked = [x for x, r in zip(ok, rs) if r["probe_path_blocked"]]
         rec = {"split": split, "kind": kind, "subgoal": sub, "policy": pseed, "n": len(rs),
+               "skipped_no_hidden": skipped[(split, kind, sub, pseed)],
                "achieved": rate, "ci_low": lo, "ci_high": hi,
                "median_s": float(np.median(times)) if times else float("nan"),
                "blocked_n": len(blocked), "blocked_achieved": float(np.mean(blocked)) if blocked else float("nan")}
         for o in PROBE_OUTCOMES:
             rec[o] = float(np.mean([r["probe_outcome"] == o for r in rs]))
+        if sub == "HIDE":
+            # Choice vs execution: did it pick a hidden spot, did it get there, and did hiding work once there.
+            arrived = [x for x, r in zip(ok, rs) if r["probe_arrived"]]
+            rec["chose_hidden"] = float(np.mean([bool(r["probe_target_hidden"]) for r in rs]))
+            rec["arrived"] = len(arrived) / len(rs)
+            rec["achieved_if_arrived"] = float(np.mean(arrived)) if arrived else float("nan")
         by_room: Dict[str, List[float]] = defaultdict(list)
         for x, r in zip(ok, rs):
             by_room[r["room_type"] or "?"].append(x)
