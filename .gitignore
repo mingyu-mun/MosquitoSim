@@ -45,6 +45,8 @@ unity/AutoTest/
 # Licensed third-party assets (Mixamo, Asset Store, Sketchfab): not redistributable
 unity/Assets/ThirdParty/
 unity/Assets/ThirdParty.meta
+unity/Assets/ThirdParty.zip
+unity/Assets/ThirdParty.zip.meta
 unity/Assets/Furniture Mega Pack/
 unity/Assets/Furniture Mega Pack.meta
 

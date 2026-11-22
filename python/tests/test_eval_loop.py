@@ -38,7 +38,8 @@ def test_quotas_and_ids():
     assert episode_index("eval_net/s1/r03e0012") == 12
 
 
-@pytest.mark.parametrize("cond,key", [("rule", "rule_command"), ("fixed", "fixed_command")])
+@pytest.mark.parametrize("cond,key", [("rule_oracle", "rule_command"), ("rule", "rule_command"),
+                                      ("rule_masked", "rule_masked_command"), ("fixed", "fixed_command")])
 def test_in_unity_commands_apply_without_delay(cond, key):
     env, res = run(cond)
     assert len(res.episodes) == 8
@@ -95,3 +96,41 @@ def test_realtime_mode_does_not_block():
     env, res = run("vlm", "realtime", planner, episodes=4)
     assert len(res.episodes) == 4
     assert res.decisions and all(d["valid"] for d in res.decisions)
+
+
+def test_masked_rule_uses_the_view_and_hides_on_alert():
+    env, res = run("rule_masked")
+    assert res.decisions and all(d["condition"] == "rule_masked" for d in res.decisions)
+    starts = [d for d in res.decisions if d["events"] == ["episode_start"]]
+    alerts = [d for d in res.decisions if d["events"] == ["alert_start"]]
+    assert starts and alerts
+    # fake view: S1 nearest skin, P1 farthest from the head; the oracle (rule_command) says HIDE P2
+    assert all(d["command"] == {"subgoal": "APPROACH", "target": "S1"} for d in starts)
+    assert all(d["command"] == {"subgoal": "HIDE", "target": "P1"} for d in alerts)
+
+
+def test_old_rule_name_maps_to_the_oracle():
+    _, res = run("rule")
+    assert res.decisions and all(d["condition"] == "rule_oracle" for d in res.decisions)
+
+
+def test_probe_records_probe_fields_and_sends_nothing():
+    env = FakeEnv(rooms=4, probe=True)
+    cfg = EvalConfig("probe", LatencyMode.parse("measured"), episodes=8, rooms=4)
+    res = EvalLoop(env, zero_policy, cfg).run()
+    assert len(res.episodes) == 8 and not res.decisions and not env.received
+    e = res.episodes[0]
+    assert e["condition"] == "probe" and e["room_type"] in ("LShape", "R5x4")
+    assert {e["probe_outcome"] for e in res.episodes} == {"achieved", "timeout"}
+
+
+def test_probe_rejects_planner_requests():
+    env = FakeEnv(rooms=2)  # sends requests like an external-planner build
+    cfg = EvalConfig("probe", LatencyMode.parse("measured"), episodes=2, rooms=2)
+    with pytest.raises(RuntimeError):
+        EvalLoop(env, zero_policy, cfg).run()
+
+
+def test_room_type_is_recorded_for_every_condition():
+    _, res = run("fixed")
+    assert all(e["room_type"] for e in res.episodes)

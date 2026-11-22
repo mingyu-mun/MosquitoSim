@@ -26,6 +26,7 @@ namespace MosquitoSim
         Random = 1,   // training
         Rule = 2,     // in Unity, for quick checks
         External = 3, // evaluation
+        Probe = 4,    // direct subgoal check: one subgoal per episode, no replanning (11/22)
     }
 
     public static class SubgoalConstants

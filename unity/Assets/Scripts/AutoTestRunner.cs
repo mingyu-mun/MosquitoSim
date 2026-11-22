@@ -164,6 +164,7 @@ namespace MosquitoSim
                 string[] paths = room.cameras.Capture(m_Out, "04_planner", 448, agents[0].transform.position,
                     room.human.Chest, cands.Current, room.Skins);
                 foreach (var p in paths) m_Shots.Add(Path.GetFileName(p));
+                Diagnose("길찾기", $"0번 방 격자 {NavGrid.Cell} m, 빈 칸 {room.Nav.FreeCells}");
                 Diagnose("후보", $"{cands.Current.Count}개, 가려짐 {Count(cands.Current, c => c.Hidden)}, 길 열림 {Count(cands.Current, c => c.ClearPath)}");
             }
             catch (System.Exception e) { Diagnose("플래너 카메라", "실패: " + e.Message); }
@@ -232,6 +233,13 @@ namespace MosquitoSim
             }
 
             Shot("05_top_end", o + new Vector3(0f, 2.35f, -0.01f), o, 110f);
+            foreach (var kv in MosquitoAgent.ProbeStats)
+                Diagnose("점검", $"{kv.Key} 시행 {kv.Value.x:0}, 달성 {kv.Value.y:0}, 달성까지 평균 " +
+                    (kv.Value.y > 0 ? (kv.Value.z / kv.Value.y).ToString("0.0") : "-") + "초");
+            foreach (var kv in MosquitoAgent.ProbeOutcomes)
+                Diagnose("점검 결과", $"{kv.Key} {kv.Value.x:0}회, 평균 {kv.Value.y / Mathf.Max(1f, kv.Value.x):0.00}초");
+            foreach (var line in MosquitoAgent.HideTrace) Diagnose("HIDE", line);
+            Diagnose("길찾기", $"MOVE_TO·HIDE 스텝 {MosquitoAgent.GuidedSteps}, 경로 없음(직선 대체) {MosquitoAgent.UnroutedSteps}");
             Diagnose("결과", $"에피소드 {MosquitoAgent.Episodes}, 성공 {MosquitoAgent.Successes}, 잡힘 {MosquitoAgent.Caught}, " +
                            $"트랩 {MosquitoAgent.Trapped}, 결정 {MosquitoAgent.Decisions}");
             Diagnose("관측", $"점검 {m_ObsChecks}회, 범위·NaN·원-핫 이상 {m_BadObs}회");

@@ -15,7 +15,7 @@
 ```
 
 - 학습에는 VLM이 없습니다. 무작위 플래너가 Unity 안에서 서브골을 고르고, ML-Agents가 배속 20으로 PPO를 돌립니다.
-- 평가에서는 모든 조건(서브골 고정, 규칙, VLM, 이미지 제외 VLM)이 같은 경로를 씁니다. Unity는 결정이 필요할 때 요청을 보내고, Python이 조건에 맞는 지시를 돌려줍니다. 서브골 고정과 규칙의 지시는 Unity가 요청에 함께 넣어 보내므로, 이 두 조건은 VLM 없이 지연 0으로 돌아갑니다.
+- 평가에서는 모든 조건(서브골 고정, 마스킹 규칙, 정답 규칙, VLM, 이미지 제외 VLM)이 같은 경로를 씁니다. Unity는 결정이 필요할 때 요청을 보내고, Python이 조건에 맞는 지시를 돌려줍니다. 서브골 고정과 정답 규칙의 지시는 Unity가 요청에 넣어 보내고, 마스킹 규칙은 Python이 요청의 `view`만 보고 계산하므로, 이 세 조건은 VLM 없이 지연 0으로 돌아갑니다.
 - 하위 정책은 평가 때 Python에서 ONNX로 돌립니다(`OnnxPolicy`). Unity는 매 결정마다 Python을 기다리므로, VLM이 계산하는 동안 시뮬레이션은 저절로 멈춥니다.
 
 ## 2. Unity 시뮬레이터
@@ -45,8 +45,8 @@ Room_00..15 (12 m 간격)
 | `Env/RoomDecor.cs`, `Env/RoomPlacement.cs` | 방 구조(문, 창문 1~2개와 커튼, 액자, 러그, 1단계부터 기둥)와 1단계부터 장애물 3~6개(펜던트 조명·매단 화분 = 공중 장애물, 벽 선반과 책, 방을 가로지르는 빨랫줄과 수건, 스탠드, 화분, 상자 더미). 도형으로 만들어 풀링. 방 크기는 형태별 기본값에서 축마다 -8~+15 %, 벽·바닥 색은 팔레트에서(가끔 포인트 벽) |
 | `Env/FurnitureItem.cs`, `Editor/FurnitureCatalog.cs` | Furniture Mega Pack 프리팹을 방마다 다른 모델로 미리 넣어 둠(비활성). 팩의 크기가 들쭉날쭉해 종류별 표준 크기(예: 탁자 높이 0.75 m)로 맞추고, 충돌체(메시 콜라이더)를 붙임 |
 | `Env/HumanAvatar.cs` | Mixamo 캐릭터: 뼈에 피부 영역·몸 충돌체, 서기↔걷기 블렌드, 180도 회전, 경계 시 머리 돌리기, 휘두르기 손 IK |
-| `Env/HumanController.cs` | 서 있기 / 걷기, 경계(윙윙 0.4초 또는 흡혈 중 확률), 시선, 가시성 |
-| `Env/HandController.cs` | 휘두르기: 대기 → 반응 지연 → 직선 스윙 → 쿨다운, 6 cm 안이면 잡힘 |
+| `Env/HumanController.cs` | 서 있기 / 걷기, 경계(윙윙 0.4초 또는 흡혈 중 확률, 3~5초 제자리에서 ±60° 훑기), 발견(시야각 ±60° + 시선), 가시성 |
+| `Env/HandController.cs` | 휘두르기: 발견 + 0.9 m 안 → 반응 지연 → 직선 스윙 → 쿨다운, 6 cm 안이면 잡힘. EVADE 점검용 강제 휘두르기 |
 | `Env/NetObstacle.cs` | 모기장 1.4×1.4×2.0 m, 한쪽 열림 |
 | `Env/CueObjects.cs` | 피부 덮개(착지 불가), 끈끈이 트랩(닿으면 실패) |
 | `Env/CandidatePoints.cs` | 0.25 m 격자, 결정마다 후보 P1~P8과 기하 정답 |
@@ -55,7 +55,7 @@ Room_00..15 (12 m 간격)
 | `Agent/ObsLayout.cs`, `ObsBuilder.cs` | 관측 59차원 |
 | `Agent/SubgoalTracker.cs` | 지시의 목표 지점, 보상 성형, 달성·시간 초과 |
 | `Agent/Planners.cs` | 고정, 규칙, 무작위 플래너 |
-| `Agent/StateDescriber.cs` | VLM 언어 지시문 |
+| `Agent/StateDescriber.cs` | 플래너 뷰(`PlannerView`)와 그 뷰로 만든 VLM 지시문 |
 | `Agent/PlannerCameras.cs` | 5대 렌더, ID 라벨(Set-of-Mark), PNG 저장 |
 | `Agent/PlannerChannel.cs` | Python과 주고받는 사이드 채널 |
 | `Agent/MosquitoAgent.cs` | 위 요소를 묶는 에이전트 |
@@ -110,12 +110,14 @@ Room_00..15 (12 m 간격)
 |---|---|---|
 | 0 | Fixed | 가장 가까운 피부로 APPROACH |
 | 1 | Random | 학습 |
-| 2 | Rule | Unity 안에서 빠른 확인용 |
+| 2 | Rule | 정답 규칙. Unity 안 빠른 확인용(평가의 `rule_oracle`과 같은 규칙) |
 | 3 | External | 평가: Python이 조건별로 답함 |
+| 4 | Probe | 직접 지정 점검: 에피소드마다 서브골 하나, 재계획 없음(`--condition probe`) |
 
 - **사건:** `episode_start`, `subgoal_achieved`, `subgoal_timeout`, `alert_start`, `alert_end`, `hand_active`. 호출 사이는 최소 1초입니다.
 - **학습 잠금:** 무작위 플래너는 흡혈 중에는 위협 사건(경계 시작, 손 활성)일 때만 바꾸고, 그 밖에는 결정 스텝마다 1% 확률(평균 5초에 한 번)로 중간 교체합니다.
-- **규칙 플래너:** 손이 1 m 안에서 움직이면 회피 → 경계 중이면 가려진 가장 가까운 후보로 숨기 → 목표 피부까지 직선이 막혔으면 사람까지 길이 열린 가장 가까운 후보로 이동 → 그 외에는 손에서 가장 먼 피부(1단계 이하는 가장 가까운 피부)로 접근. 덮개와 트랩은 보지 않으며, 접근이 시간 초과된 피부만 제외합니다.
+- **마스킹 규칙(`rule_masked`, Python):** 요청의 `view`(VLM 지시문과 같은 정보)만 읽습니다. 손이 1 m 안이면 회피 → 경계 중이면 모기에서 가장 먼 후보로 숨기 → 그 외 가장 가까운 피부로 접근.
+- **정답 규칙(`rule_oracle`, Unity `Planners.Rule`):** 손이 1 m 안에서 움직이면 회피 → 경계 중이면 가려진 가장 가까운 후보로 숨기 → 목표 피부까지 직선이 막혔으면 사람까지 길이 열린 가장 가까운 후보로 이동 → 그 외에는 손에서 가장 먼 피부(1단계 이하는 가장 가까운 피부)로 접근. 덮개와 트랩은 보지 않으며, 접근이 시간 초과된 피부만 제외합니다.
 
 ## 4. 학습 코드
 
@@ -147,7 +149,7 @@ TensorBoard에서 `Mosquito/Success`, `Mosquito/Caught`, `Mosquito/Trapped`, `Mo
 1. `evaluate.py`가 Unity에 환경 파라미터(`planner=3`, 분할, 단계, 평가 시드, 최종 착지 조건)와 채널 설정(이미지 폴더, VLM이면 이미지 캡처)을 보냅니다.
 2. 매 스텝 `EvalLoop`가 관측을 받아 ONNX 정책으로 행동을 내고, 예약 시간이 된 지시를 보낸 뒤 한 스텝 진행합니다(시뮬레이션 0.05초).
 3. 요청이 오면 조건에 따라 처리합니다.
-   - 서브골 고정·규칙: 요청에 든 `fixed_command`·`rule_command`를 지연 0으로 예약
+   - 서브골 고정·정답 규칙·마스킹 규칙: `fixed_command`·`rule_command`, 또는 `view`로 계산한 마스킹 규칙 지시를 지연 0으로 예약
    - VLM·이미지 제외 VLM: 플래너 서버를 부르고(그동안 Unity는 멈춤), 응답을 검증한 뒤 `요청 시각 + d`에 예약. 무효면 보내지 않아 직전 지시가 유지됨
    - `realtime`: 별도 스레드로 부르고 시뮬레이션은 계속 진행
 4. 에피소드가 끝나면 그 방의 예약을 지우고 결과를 기록합니다. 방마다 할당량(예: 30에피소드면 앞의 14개 방이 2개, 나머지가 1개)을 채우면 끝납니다. 할당량을 넘은 에피소드의 요청에는 고정 지시만 돌려줘 VLM을 부르지 않습니다.
@@ -160,7 +162,7 @@ TensorBoard에서 `Mosquito/Success`, `Mosquito/Caught`, `Mosquito/Trapped`, `Mo
 python python/planner_server/server.py --backend transformers --model Qwen/Qwen3-VL-8B-Instruct
 
 # 2단계 끝, 새 물체, 네 조건
-for c in fixed rule vlm vlm_noimg; do
+for c in fixed rule_masked rule_oracle vlm vlm_noimg; do
   python python/evaluation/evaluate.py --env builds/Main/MosquitoSim.x86_64 \
     --policy results/stage2_s1/Mosquito.onnx --policy-seed 1 --stage 2 \
     --split new_object --condition $c --latency measured --eval-seed 1 --episodes 30
@@ -171,7 +173,7 @@ for d in 0 0.25 0.5 1 2; do
   python python/evaluation/evaluate.py ... --condition vlm --latency fixed:$d
 done
 
-python python/evaluation/metrics.py results/eval --baseline rule
+python python/evaluation/metrics.py results/eval --baseline rule_masked
 ```
 
 ## 6. 검증 상태와 남은 일

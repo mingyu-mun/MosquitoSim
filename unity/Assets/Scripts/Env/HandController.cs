@@ -43,6 +43,13 @@ namespace MosquitoSim
             hand.position = RestPos;
         }
 
+        /// <summary>Wind up now and swing after <paramref name="delay"/> s (EVADE probe start).</summary>
+        public void ForceSwing(float delay)
+        {
+            Current = State.WindUp;
+            m_Timer = delay;
+        }
+
         /// <summary>Advance one step. Returns true if the mosquito is caught.</summary>
         public bool Step(float dt, Vector3 mosquitoPos, Vector3 mosquitoVel)
         {
@@ -51,7 +58,8 @@ namespace MosquitoSim
             {
                 case State.Rest:
                     hand.position = RestPos;
-                    if (human.Alert && Vector3.Distance(mosquitoPos, Shoulder) < Reach && human.CanSee(mosquitoPos))
+                    // Swat as soon as the alert human has the mosquito in view and within reach.
+                    if (human.Spotted && Vector3.Distance(mosquitoPos, Shoulder) < Reach)
                     {
                         Current = State.WindUp;
                         m_Timer = m_Fast ? Range(0.15f, 0.3f) : Range(0.3f, 0.5f);

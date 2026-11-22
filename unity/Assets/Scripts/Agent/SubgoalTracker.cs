@@ -36,9 +36,11 @@ namespace MosquitoSim
         public void UpdateTarget(Vector3 target) => Target = target;
 
         /// <summary>Distance change toward (EVADE: away from) the target since the last call.</summary>
-        public float Shaping(Vector3 pos)
+        public float Shaping(Vector3 pos) => Shaping(Vector3.Distance(pos, Target));
+
+        /// <summary>Same, with the distance given (route length for guided MOVE_TO / HIDE).</summary>
+        public float Shaping(float d)
         {
-            float d = Vector3.Distance(pos, Target);
             float r = Command.Subgoal == Subgoal.Evade ? d - m_PrevDist : m_PrevDist - d;
             m_PrevDist = d;
             return r;

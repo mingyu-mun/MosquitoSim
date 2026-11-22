@@ -28,6 +28,8 @@ namespace MosquitoSim
         public RoomGenerator Generator { get; private set; }
         public ObstacleSpawner Obstacles { get; private set; }
         public CandidatePoints Candidates { get; private set; }
+        /// <summary>Free-space grid for routing MOVE_TO / HIDE around obstacles (stage 1+).</summary>
+        public readonly NavGrid Nav = new NavGrid();
         public CueObjects Cues { get; private set; }
         public RoomDecor Decor { get; private set; }
         public NetObstacle Net => net;
@@ -96,8 +98,16 @@ namespace MosquitoSim
             hand.ResetHand(new System.Random(rng.Next()), p.FastHuman);
             if (cameras != null) cameras.PlaceOverview(this);
             Physics.SyncTransforms();
-            if (stage >= 1 || p.Planner == PlannerKind.External) Candidates.BuildGrid(this);
-            else Candidates.Current.Clear();
+            if (stage >= 1 || p.Planner == PlannerKind.External)
+            {
+                Candidates.BuildGrid(this);
+                Nav.Build(InnerBounds);
+            }
+            else
+            {
+                Candidates.Current.Clear();
+                Nav.Clear();
+            }
         }
 
         /// <summary>Random floor point at least <paramref name="margin"/> from walls.</summary>
