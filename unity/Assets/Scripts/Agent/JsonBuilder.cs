@@ -66,7 +66,10 @@ namespace MosquitoSim
                     case '\r': m_Sb.Append("\\r"); break;
                     case '\t': m_Sb.Append("\\t"); break;
                     default:
-                        if (c < 0x20) m_Sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        // ML-Agents side-channel strings are ASCII only (WriteString uses
+                        // Encoding.ASCII, so every non-ASCII char would arrive as '?').
+                        // Escape them; the Python json parser restores the text.
+                        if (c < 0x20 || c > 0x7e) m_Sb.Append("\\u").Append(((int)c).ToString("x4"));
                         else m_Sb.Append(c);
                         break;
                 }

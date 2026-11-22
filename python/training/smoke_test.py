@@ -29,9 +29,13 @@ def main() -> int:
     from mlagents_envs.environment import UnityEnvironment
     from mlagents_envs.base_env import ActionTuple
     from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
+    from mlagents_envs.side_channel.stats_side_channel import StatsSideChannel
 
     engine = EngineConfigurationChannel()
-    env = UnityEnvironment(file_name=args.env, seed=args.seed, side_channels=[engine],
+    # The agent records stats (Mosquito/Success, ...) every episode. Without a
+    # stats channel on this end each one is logged as "Unknown side channel data".
+    stats = StatsSideChannel()
+    env = UnityEnvironment(file_name=args.env, seed=args.seed, side_channels=[engine, stats],
                            no_graphics=args.env is not None)
     engine.set_configuration_parameters(time_scale=args.time_scale)
     env.reset()
