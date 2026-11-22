@@ -28,6 +28,8 @@ namespace MosquitoSim
         public const float ScanAmplitude = 60f, ScanSideSeconds = 1f;
         /// <summary>Turning the body toward the buzzing when the alert starts.</summary>
         public const float SearchTurnSeconds = 1f;
+        /// <summary>HIDE scenario: the alert lasts exactly this long (11/22).</summary>
+        public const float HideSearchSeconds = 5f;
         /// <summary>Direction changes larger than this use the turn (180°) animation.</summary>
         public const float TurnAngle = 100f;
         public const float WalkTurnRate = 240f; // deg/s for smaller changes while walking
@@ -265,10 +267,10 @@ namespace MosquitoSim
         /// sound position (buzzing) the body first turns toward it over 1 s;
         /// bites raise the alert without a turn.
         /// </summary>
-        public void StartAlert(Vector3? soundFrom = null)
+        public void StartAlert(Vector3? soundFrom = null, float? duration = null)
         {
             if (!Alert) m_ScanTime = 0f;
-            m_AlertDuration = Range(AlertMinSeconds, AlertMaxSeconds);
+            m_AlertDuration = duration ?? Range(AlertMinSeconds, AlertMaxSeconds);
             m_AlertTimer = m_AlertDuration;
             if (soundFrom.HasValue)
             {
@@ -297,7 +299,7 @@ namespace MosquitoSim
         {
             SearchSuspended = false;
             Spotted = SpottedEver = false;
-            StartAlert(soundFrom);
+            StartAlert(soundFrom, HideSearchSeconds); // fixed, so every HIDE evaluation is equally long
         }
 
         /// <summary>Line of sight from the head, ignoring the human's own body.</summary>
