@@ -1,0 +1,113 @@
+using UnityEngine;
+
+namespace MosquitoSim
+{
+    /// <summary>
+    /// The swatting hand (stage 2+). When the human is alert and can see the
+    /// mosquito within reach, the hand winds up for a reaction delay and then
+    /// swings in a straight line at the mosquito's (slightly predicted)
+    /// position. Passing within 6 cm catches the mosquito.
+    /// Training: reaction 0.3-0.5 s, 3-5 m/s. New human: 0.15-0.3 s, 6-8 m/s.
+    /// </summary>
+    public class HandController : MonoBehaviour
+    {
+        public enum State { Rest, WindUp, Swing, Cooldown }
+
+        public HumanController human;
+        public Transform hand; // visual only, no collider
+
+        public const float Reach = 0.9f;
+        public const float CatchRadius = 0.06f;
+        public const float CooldownSeconds = 1f;
+        public const float Lead = 0.1f;
+
+        public State Current { get; private set; }
+        public bool Active => Current == State.WindUp || Current == State.Swing;
+        public Vector3 Position => hand.position;
+        public Vector3 Velocity { get; private set; }
+
+        System.Random m_Rng;
+        bool m_Fast;
+        float m_Timer, m_Speed;
+        Vector3 m_Target;
+
+        Vector3 RestPos => human.transform.TransformPoint(new Vector3(0.3f, 0.9f, 0.15f));
+        Vector3 Shoulder => human.transform.TransformPoint(new Vector3(0.22f, 1.35f, 0f));
+
+        public void ResetHand(System.Random rng, bool fast)
+        {
+            m_Rng = rng;
+            m_Fast = fast;
+            Current = State.Rest;
+            Velocity = Vector3.zero;
+            hand.position = RestPos;
+        }
+
+        /// <summary>Advance one step. Returns true if the mosquito is caught.</summary>
+        public bool Step(float dt, Vector3 mosquitoPos, Vector3 mosquitoVel)
+        {
+            Vector3 prev = hand.position;
+            switch (Current)
+            {
+                case State.Rest:
+                    hand.position = RestPos;
+                    if (human.Alert && Vector3.Distance(mosquitoPos, Shoulder) < Reach && human.CanSee(mosquitoPos))
+                    {
+                        Current = State.WindUp;
+                        m_Timer = m_Fast ? Range(0.15f, 0.3f) : Range(0.3f, 0.5f);
+                    }
+                    break;
+
+                case State.WindUp:
+                    hand.position = RestPos;
+                    m_Timer -= dt;
+                    if (m_Timer <= 0f)
+                    {
+                        m_Target = mosquitoPos + mosquitoVel * Lead;
+                        m_Speed = m_Fast ? Range(6f, 8f) : Range(3f, 5f);
+                        Current = State.Swing;
+                    }
+                    break;
+
+                case State.Swing:
+                {
+                    Vector3 d = m_Target - prev;
+                    float step = m_Speed * dt;
+                    bool arrived = d.magnitude <= step;
+                    Vector3 next = arrived ? m_Target : prev + d.normalized * step;
+                    hand.position = next;
+                    if (SegmentDistance(prev, next, mosquitoPos) < CatchRadius)
+                    {
+                        Velocity = (next - prev) / dt;
+                        return true;
+                    }
+                    if (arrived)
+                    {
+                        Current = State.Cooldown;
+                        m_Timer = CooldownSeconds;
+                    }
+                    break;
+                }
+
+                case State.Cooldown:
+                    hand.position = Vector3.MoveTowards(prev, RestPos, 2f * dt);
+                    m_Timer -= dt;
+                    if (m_Timer <= 0f) Current = State.Rest;
+                    break;
+            }
+            Velocity = (hand.position - prev) / dt;
+            return false;
+        }
+
+        static float SegmentDistance(Vector3 a, Vector3 b, Vector3 p)
+        {
+            Vector3 ab = b - a;
+            float len2 = ab.sqrMagnitude;
+            if (len2 < 1e-10f) return Vector3.Distance(a, p);
+            float t = Mathf.Clamp01(Vector3.Dot(p - a, ab) / len2);
+            return Vector3.Distance(a + ab * t, p);
+        }
+
+        float Range(float a, float b) => a + (float)m_Rng.NextDouble() * (b - a);
+    }
+}
