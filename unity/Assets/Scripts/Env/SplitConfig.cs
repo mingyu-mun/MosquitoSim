@@ -40,6 +40,8 @@ namespace MosquitoSim
         public float TimePenalty;      // per simulated second
         public float PrevStageMix;     // training only: chance of using stage - 1
         public float BiteAlertChance;  // per second of feeding, stage >= 2
+        public int ProbeSubgoal;       // planner = Probe: -1 cycles through the stage's subgoals, 0-3 = Subgoal
+        public bool HideScenario;      // planner = External: every episode is the HIDE scenario (11/22)
 
         public static EnvParams Read()
         {
@@ -56,6 +58,8 @@ namespace MosquitoSim
                 TimePenalty = p.GetWithDefault("time_penalty", 0.005f),
                 PrevStageMix = p.GetWithDefault("prev_stage_mix", 0.2f),
                 BiteAlertChance = p.GetWithDefault("bite_alert_chance", 0.25f),
+                ProbeSubgoal = Mathf.RoundToInt(p.GetWithDefault("probe_subgoal", -1f)),
+                HideScenario = p.GetWithDefault("hide_scenario", 0f) > 0.5f,
             };
             // Auto test (Editor Play without Python): the only place test arguments override parameters.
             if (SimSettings.ManualPlay)
@@ -65,6 +69,7 @@ namespace MosquitoSim
                 e.Split = s.envSplit;
                 e.Planner = s.planner;
                 e.EvalSeed = s.evalSeed;
+                e.ProbeSubgoal = s.probeSubgoal;
             }
             if (AutoTestRunner.Active)
             {
@@ -76,6 +81,8 @@ namespace MosquitoSim
                 e.LandingSpeed = AutoTestRunner.F("landing_speed", e.LandingSpeed);
                 e.FeedTime = AutoTestRunner.F("feed_time", e.FeedTime);
                 e.BiteAlertChance = AutoTestRunner.F("bite_alert_chance", e.BiteAlertChance);
+                e.ProbeSubgoal = Mathf.RoundToInt(AutoTestRunner.F("probe_subgoal", e.ProbeSubgoal));
+                e.HideScenario = AutoTestRunner.F("hide_scenario", e.HideScenario ? 1f : 0f) > 0.5f;
             }
             return e;
         }

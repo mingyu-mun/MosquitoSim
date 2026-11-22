@@ -17,6 +17,10 @@ namespace MosquitoSim
         public List<Candidate> Candidates;
         public HashSet<string> ExcludedSkins;
         public PlannerCommand Current;
+        /// <summary>HIDE scenario before the choice: the human is about to look around.</summary>
+        public bool HideSituation;
+        /// <summary>The alert counts for planning: stage 2+, or the HIDE scenario at any stage.</summary>
+        public bool AlertKnown => (Stage >= 2 || HideSituation) && Human.Alert;
 
         public IEnumerable<SkinZone> AllowedSkins()
         {
@@ -60,7 +64,7 @@ namespace MosquitoSim
             if (c.Stage >= 2 && c.Hand.Active && Vector3.Distance(c.Hand.Position, c.MosquitoPos) < ThreatDistance)
                 return new PlannerCommand(Subgoal.Evade, null);
 
-            if (c.Stage >= 2 && c.Human.Alert && c.Candidates.Count > 0)
+            if (c.AlertKnown && c.Candidates.Count > 0)
             {
                 Candidate? best = null;
                 foreach (var k in c.Candidates)
@@ -142,6 +146,43 @@ namespace MosquitoSim
                 default:
                     return new PlannerCommand(Subgoal.MoveTo, c.Candidates[rng.Next(c.Candidates.Count)].Id);
             }
+        }
+
+        /// <summary>Subgoals a stage trains and checks: 0 APPROACH; 1 + HIDE, MOVE_TO; 2+ + EVADE.</summary>
+        public static List<Subgoal> StageSubgoals(int stage)
+        {
+            var list = new List<Subgoal> { Subgoal.Approach };
+            if (stage >= 1) { list.Add(Subgoal.Hide); list.Add(Subgoal.MoveTo); }
+            if (stage >= 2) list.Add(Subgoal.Evade);
+            return list;
+        }
+
+        /// <summary>
+        /// Direct subgoal check (planner = Probe): the target for one given subgoal,
+        /// drawn like the training planner draws it. APPROACH: an uncovered skin.
+        /// HIDE: a candidate hidden from the head (any candidate if none is).
+        /// MOVE_TO: any candidate. EVADE: no target (the hand).
+        /// </summary>
+        public static PlannerCommand Probe(PlannerContext c, System.Random rng, Subgoal g)
+        {
+            switch (g)
+            {
+                case Subgoal.Hide:
+                case Subgoal.MoveTo:
+                {
+                    if (c.Candidates.Count == 0) break;
+                    var pool = new List<Candidate>();
+                    if (g == Subgoal.Hide) foreach (var k in c.Candidates) if (k.Hidden) pool.Add(k);
+                    if (pool.Count == 0) pool.AddRange(c.Candidates);
+                    return new PlannerCommand(g, pool[rng.Next(pool.Count)].Id);
+                }
+                case Subgoal.Evade:
+                    return new PlannerCommand(Subgoal.Evade, null);
+            }
+            var skins = new List<SkinZone>();
+            foreach (var s in c.Human.skins) if (!s.covered) skins.Add(s);
+            if (skins.Count == 0) skins.AddRange(c.Human.skins);
+            return new PlannerCommand(Subgoal.Approach, skins[rng.Next(skins.Count)].id);
         }
 
         static SkinZone Nearest(PlannerContext c, IEnumerable<SkinZone> skins)

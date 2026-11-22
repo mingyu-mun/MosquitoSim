@@ -56,8 +56,12 @@
 - **피부 ID:** 사람마다 고정. S1 머리, S2 왼팔, S3 오른팔, S4 왼쪽 종아리, S5 오른쪽 종아리. 어느 피부든 흡혈을 마치면 성공이고, 착지는 APPROACH로 고른 영역에만 됩니다.
 - **후보 지점:** 리셋 때 빈 공간에 0.25m 격자를 만들고, 결정마다 8개를 뽑아 P1~P8로 번호를 붙입니다. 4개는 사람 머리에서 가려진 지점, 4개는 방 곳곳에 퍼진 지점(가장 먼 점 샘플링), 서로 0.5m 이상. 모기장 평가에서는 네 면 바깥 0.3m에 하나씩 반드시 포함하고 열린 면도 똑같이 다룹니다. 번호 순서는 평가 시드로 섞습니다.
 - **표시:** ID를 전경·모기 시점 이미지에 덧그립니다(Set-of-Mark). 지시문에는 ID와 모기로부터의 거리만.
-- **조건별 정보:** 규칙은 후보마다 가려짐 여부, 사람까지 직선 열림, 손과의 거리를 정확히 받음(상한). VLM은 이미지 + 지시문, 이미지 제외 VLM은 지시문만(하한).
-- **규칙 플래너:** 손이 1m 안에서 다가오면 EVADE → 경계 중이면 가장 가까운 가려진 후보로 HIDE(없으면 시선 반대쪽 가장 가까운 후보) → 목표 피부로의 직선이 막혔으면 모기에서 직선으로 갈 수 있고 사람까지 직선이 열린 가장 가까운 후보로 MOVE_TO(둘 다 만족하는 후보가 없으면 사람까지만 열린 후보) → 그 외 손에서 가장 먼 피부로 APPROACH(접근이 시간 초과된 피부는 그 에피소드에서 제외). 규칙은 학습 환경 기준으로 만든 뒤 고치지 않습니다. 2단계 새 물체 평가의 단서 물체(피부 덮개, 끈끈이 트랩)는 규칙 입력에 들어가지 않습니다.
+- **조건별 정보(11/22 확정):** 정보는 "플래너 뷰"(`PlannerView`, 요청의 `view`)로 정합니다. 뷰에는 경계 여부(남은 시간 없음), 손의 활성·거리·다가오는 속도, 착지·흡혈 진행, 피부 ID·이름·모기로부터의 거리, 후보 ID와 후보마다 모기로부터의 거리·사람 머리로부터의 거리·바닥에서의 높이, 직전 지시만 들어갑니다. VLM 지시문은 이 뷰에서만 만듭니다.
+  - `rule_masked`: 뷰만 읽는 규칙(`python/mosquitosim/masked_rule.py`). VLM과 같은 정보에서 손으로 짠 규칙과 비교하는 기준선입니다.
+  - `vlm_noimg`: 뷰로 만든 지시문만. `vlm`: 지시문 + 이미지 5장.
+  - `rule_oracle`: 후보마다 가려짐 여부, 사람까지 직선 열림, 장면 기하를 정확히 받는 규칙(Unity `Planners.Rule`). 비교 상대가 아니라 숨을 곳을 완벽히 고를 때의 상한 참고입니다.
+- **마스킹 규칙(`rule_masked`):** 손이 움직이고 1m 안이면 EVADE → 경계 중이면 사람 머리에서 가장 먼 후보로 HIDE(같으면 모기에서 가까운 것. 가려짐은 모름) → 그 외 가장 가까운 피부로 APPROACH. 길이 막혔는지 알 수 없으므로 MOVE_TO는 고르지 않습니다.
+- **정답 규칙(`rule_oracle`):** 손이 1m 안에서 다가오면 EVADE → 경계 중이면 가장 가까운 가려진 후보로 HIDE(없으면 시선 반대쪽 가장 가까운 후보) → 목표 피부로의 직선이 막혔으면 모기에서 직선으로 갈 수 있고 사람까지 직선이 열린 가장 가까운 후보로 MOVE_TO(둘 다 만족하는 후보가 없으면 사람까지만 열린 후보) → 그 외 손에서 가장 먼 피부로 APPROACH(접근이 시간 초과된 피부는 그 에피소드에서 제외). 규칙은 학습 환경 기준으로 만든 뒤 고치지 않습니다. 2단계 새 물체 평가의 단서 물체(피부 덮개, 끈끈이 트랩)는 규칙 입력에 들어가지 않습니다.
 - **무효:** 없는 서브골, 이번 결정에 제시되지 않은 ID, 필요한 대상 누락. EVADE의 대상은 무시.
 
 ## 서브골
@@ -73,7 +77,35 @@
 
 교체 규칙(학습): 달성, 실패, 시간 초과(8초) 때 교체. 결정마다 평균 5초에 한 번 무작위 중간 교체. 흡혈 중에는 무작위 중간 교체를 하지 않지만, 2단계부터 위협 사건(손 활성 등) 때의 사건 교체는 착지 중에도 허용합니다(최종 점검 1-2).
 
-직접 지정 점검(평가): 서브골 하나를 지정해 8초 안에 달성하는지 봅니다.
+직접 지정 점검(평가, `planner=4`, 11/22 구현): 에피소드마다 서브골 하나를 지정하고, 재계획 없이 8초 안에 달성하는지 봅니다. 결과는 achieved, timeout, caught, trapped, wrong_skin(APPROACH에서 다른 피부에 착지). 단계 통과는 val, 평가 시드 1~3 × 30회에서 정책 시드 평균 달성률이 서브골별 80 % 이상입니다(`metrics.py --probe`).
+
+| 서브골 | 대상 | 시작 상황 | 달성 |
+|---|---|---|---|
+| APPROACH | 덮이지 않은 피부 중 무작위 | 평소와 같음 | 목표 피부에 착지 |
+| HIDE | 머리에서 가려진 후보 중 무작위(정답 선택) | HIDE 시나리오(아래) | 경계가 끝날 때까지 발각되지 않음 |
+| MOVE_TO | 후보 중 무작위 | 평소와 같음 | 지점 0.15 m 안 도착 |
+| EVADE | 손 | 손에서 0.4~0.6 m(손이 닿는 범위), 0.5초 뒤 손이 휘두름 | 잡히지 않고 휘두르기가 끝나거나 손에서 1.5 m |
+
+학습(무작위 플래너) 중에는 서브골이 달성·시간 초과로 끝날 때마다 TensorBoard에 `Subgoal/<이름>/Achieved`, `Subgoal/<이름>/Seconds`를 남깁니다(중간 교체는 세지 않음, 추세 확인용).
+
+## HIDE 시나리오 (11/22)
+
+HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅니다. 직접 지정 점검(`planner=4`, HIDE)과 플래너 평가(`evaluate.py --scenario hide`, Unity `hide_scenario=1`)가 같은 시나리오를 씁니다. 1단계부터 쓸 수 있습니다.
+
+1. 모기가 사람 머리에서 0.5~1.0 m, 머리에서 보이는 곳에서 시작합니다. 사람은 모기 소리를 들은 상태(경계)입니다.
+2. 플래너가 숨을 곳(HIDE + P1~P8)을 고릅니다. 고르는 동안(VLM 계산 포함) 모기와 사람은 멈춰 있습니다. 지시문에는 "[지금] … HIDE로 골라라"와 HIDE 출력 형식만 들어갑니다(`view.situation = "hide"`). HIDE가 아닌 응답은 무시하고, 10초 안에 유효한 선택이 없으면 모기는 그 자리에 있는 채로 다음 단계가 시작됩니다(`probe_valid = false`).
+3. 선택이 적용되면 사람이 소리 난 쪽(모기 시작 위치)으로 1초에 걸쳐 몸을 돌린 뒤 머리를 훑으며 둘러봅니다. 경계 시간은 3~5초입니다.
+4. 발견되면 실패(`spotted`), 경계가 끝나면 성공(`achieved`). 잡히거나 트랩에 닿아도 실패입니다.
+
+점검(정답 선택)은 하위 정책의 통과 기준, `--scenario hide`의 조건별 결과(`hide-<조건>`)는 플래너 비교에 씁니다. 숨을 곳이 실제로 가려졌는지(`probe_target_hidden`)도 함께 기록되므로, 실패가 선택 탓인지 실행 탓인지 나눠 볼 수 있습니다.
+
+## 사람의 경계 (11/22)
+
+- 시작: 모기가 머리 0.5 m 안에서 0.4초 윙윙거리거나, 흡혈 중 1초마다 `bite_alert_chance` 확률.
+- 경계 중에는 제자리에 멈추고(걷기 중단), 윙윙거림으로 시작한 경계면 먼저 소리 난 쪽으로 1초에 걸쳐 몸을 돌린 뒤, 머리를 좌우 ±60°로 훑습니다(한 방향에 1초). 3~5초(경계마다 무작위)가 지나면 평온으로 돌아가 걷기를 이어 갑니다.
+- 발견: 모기가 머리 방향 ±60° 안에 있고 머리에서의 시선이 막히지 않으면(거리 제한 없음). 발견하면 모기를 계속 보고 경계 시간이 처음부터 다시 시작됩니다.
+- 공격: 발견한 상태에서 모기가 어깨에서 0.9 m 안이면 휘두르기 시작(반응 지연: 학습 0.3~0.5초, new_human 0.15~0.3초). 손이 닿지 않으면 제자리에서 지켜봅니다(11/22 추천안으로 구현, 확인 필요).
+- 후보의 `hidden`은 시야각과 상관없이 머리에서 시선이 막혔는지만 봅니다.
 
 ## 단계별 학습 서브골
 
@@ -89,7 +121,9 @@
 |---|---|---|
 | stage | 0, 1, 2 (3은 확장, 미구현) | `EnvParams` |
 | env_split | 0 train, 1 val, 2 eval_familiar, 3 eval_new_room, 4 eval_new_object, 5 eval_new_human, 6 eval_net | `EnvParams` |
-| planner | 0 fixed, 1 random(학습), 2 rule(Unity 안), 3 external(평가: Python이 조건별로 답함) | `EnvParams` |
+| planner | 0 fixed, 1 random(학습), 2 rule(Unity 안, 정답 규칙), 3 external(평가: Python이 조건별로 답함), 4 probe(직접 지정 점검) | `EnvParams` |
+| probe_subgoal | planner=4일 때 점검할 서브골. −1 단계의 서브골을 순환, 0 APPROACH, 1 HIDE, 2 EVADE, 3 MOVE_TO | `EnvParams` |
+| hide_scenario | planner=3일 때 1이면 모든 에피소드가 HIDE 시나리오 | `EnvParams` |
 | eval_seed | 정수. 검증·평가 에피소드의 배치를 정함 | `EnvParams` |
 | landing_radius | 착지 허용 거리(m), 커리큘럼 0.06 → 0.02 | `EnvParams` |
 | landing_speed | 착지 허용 속도(m/s), 0.6 → 0.3 | `EnvParams` |
@@ -98,7 +132,7 @@
 | prev_stage_mix | 학습 때 이전 단계 설정을 쓸 확률 0.2 | `EnvParams` |
 | bite_alert_chance | 2단계부터, 흡혈 1초마다 사람이 경계할 확률 0.25 | `EnvParams` |
 
-평가 조건(fixed, rule, vlm, vlm_noimg), 지연 방식(`measured`, `fixed:<초>`, `realtime`), VLM 설정은 Unity 파라미터가 아니라 `evaluate.py`와 플래너 서버의 인자입니다.
+평가 조건(fixed, rule_masked, rule_oracle, vlm, vlm_noimg. 예전 이름 rule은 rule_oracle), 지연 방식(`measured`, `fixed:<초>`, `realtime`), VLM 설정은 Unity 파라미터가 아니라 `evaluate.py`와 플래너 서버의 인자입니다.
 
 ## 플래너 호출 시점
 
@@ -115,12 +149,13 @@
   "instruction": "[과제] ... [상황] ... [출력] ...",
   "images": {"mosquito": "<png base64>", "overview": ["...", "...", "...", "..."]},
   "candidates": [{"id": "P1", "pos": [0.4, 1.1, -0.8], "dist": 0.7, "hidden": true, "clear_path": false}],
+  "view": {"stage": 2, "alert": true, "hand_active": false, "skins": [{"id": "S1", "name": "머리", "dist": 1.2}], "candidates": [{"id": "P1", "dist": 0.7}], "...": "..."},
   "rule_command": {"subgoal": "APPROACH", "target": "S2"},
   "vlm_config": "c_bf16"
 }
 ```
 
-요청에는 이번 결정의 후보 목록(`"candidates": [{"id": "P1", "pos": [...], "dist": 0.7, "hidden": true, "clear_path": false}, ...]`)을 함께 보냅니다. `hidden`, `clear_path`는 규칙 플래너와 로그용이고 VLM 프롬프트에는 넣지 않습니다.
+요청에는 이번 결정의 후보 목록(`"candidates": [{"id": "P1", "pos": [...], "dist": 0.7, "hidden": true, "clear_path": false}, ...]`)을 함께 보냅니다. `hidden`, `clear_path`는 정답 규칙과 로그용이고 VLM 프롬프트와 `view`에는 넣지 않습니다. `rule_command`는 정답 규칙의 지시입니다.
 
 응답: 위 "플래너 지시" 형식. 무효면 직전 지시를 유지합니다.
 
@@ -130,9 +165,9 @@
 |---|---|---|
 | Python → Unity | config | image_dir, log, capture_images, image_size. 받기 전에는 Unity가 아무것도 보내지 않음 |
 | Python → Unity | command | room, episode, decision, command. 다른 에피소드의 지시는 무시 |
-| Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], instruction, images[](VLM일 때), rule_command, fixed_command |
+| Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command |
 | Unity → Python | decision | request와 같은 필드 + command (Unity 안 플래너의 로그) |
-| Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward |
+| Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait |
 
 에피소드 ID는 `<분할>/s<평가 시드>/r<방>e<방의 에피소드 번호>`입니다.
 
@@ -149,4 +184,4 @@ VLM 호출은 Python 평가 루프(`evaluate.py`)가 맡습니다. Unity는 사�
 
 ## 로그
 
-결정 로그 한 줄: 시각, 에피소드 ID, 입력(이미지 파일 경로, 지시문), 후보 목록과 기하 정답, 원문 응답, 서브골과 대상 ID, 유효 여부, 지연, 같은 상황의 규칙 지시. 기하 정답으로 "HIDE로 고른 지점이 실제로 가려진 비율", "MOVE_TO로 고른 지점에서 사람까지 길이 열린 비율"을 계산합니다. 이 로그가 지연 실험의 재생 데이터입니다.
+결정 로그 한 줄: 시각, 에피소드 ID, 입력(이미지 파일 경로, 지시문), 후보 목록과 기하 정답, 원문 응답, 서브골과 대상 ID, 유효 여부, 지연, 같은 상황의 정답 규칙·마스킹 규칙 지시(`rule_command`, `rule_masked_command`). 기하 정답으로 "HIDE로 고른 지점이 실제로 가려진 비율", "MOVE_TO로 고른 지점에서 사람까지 길이 열린 비율"을 계산합니다. 이 로그가 지연 실험의 재생 데이터입니다.

@@ -1,6 +1,7 @@
 """Summaries and paired bootstrap differences over evaluate.py outputs.
 
-    python python/evaluation/metrics.py results/eval --baseline rule
+    python python/evaluation/metrics.py results/eval --baseline rule_masked
+    python python/evaluation/metrics.py results/eval --probe     # direct subgoal checks and HIDE scenarios
 
 Each run directory holds episodes.csv. Episodes are paired across conditions
 by (split, policy seed + eval seed, episode id), which evaluate.py makes
@@ -18,6 +19,8 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 
 OUTCOMES = ("success", "caught", "trapped", "timeout")
+PROBE_OUTCOMES = ("achieved", "timeout", "spotted", "caught", "trapped", "wrong_skin")
+PASS_RATE = 0.8  # stage pass: mean over policy seeds of each subgoal's achieved rate
 
 
 def _bool(v) -> float:
@@ -32,7 +35,12 @@ def load_runs(root: Path) -> List[dict]:
             for r in csv.DictReader(f):
                 rows.append({"condition": condition, "split": split, "seed": seed, "latency": latency,
                              "episode": r["episode"], **{k: _bool(r[k]) for k in OUTCOMES},
-                             "sim_time": float(r["sim_time"] or 0)})
+                             "sim_time": float(r["sim_time"] or 0),
+                             "room_type": r.get("room_type") or "",
+                             "probe_subgoal": r.get("probe_subgoal") or "",
+                             "probe_outcome": r.get("probe_outcome") or "",
+                             "probe_time": float(r.get("probe_time") or 0),
+                             "probe_path_blocked": _bool(r.get("probe_path_blocked"))})
     return rows
 
 
@@ -49,6 +57,70 @@ def summarize(rows: Iterable[dict]) -> List[dict]:
         rec["time_to_feed"] = float(np.mean(ok)) if ok else float("nan")
         out.append(rec)
     return out
+
+
+def bootstrap_mean(x: Sequence[float], n_boot: int = 10000, seed: int = 0) -> Tuple[float, float, float]:
+    """Mean of x and its 95% percentile interval."""
+    x = np.asarray(x, float)
+    if x.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    boots = x[rng.integers(0, x.size, size=(n_boot, x.size))].mean(axis=1)
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    return float(x.mean()), float(lo), float(hi)
+
+
+def is_check_run(condition: str) -> bool:
+    """Direct subgoal checks and HIDE scenario runs (kept out of the feeding-success summary)."""
+    return condition.startswith("probe") or condition.startswith("hide-")
+
+
+def policy_seed(seed: str) -> str:
+    """'p2s3' -> 'p2' (runs of one policy with different eval seeds pool together)."""
+    return seed.split("s", 1)[0]
+
+
+def probe_summary(rows: Iterable[dict]) -> Tuple[List[dict], List[dict]]:
+    """Direct subgoal check. Returns (per subgoal x policy seed x run kind, per subgoal x run kind).
+
+    Run kind: "probe" (direct check, ground-truth targets), "probe-null" (do-nothing baseline), or
+    "hide-<condition>" (HIDE scenario with that planner choosing the spot). The pass verdict applies
+    to "probe": mean over policy seeds >= PASS_RATE.
+    """
+    groups: Dict[Tuple[str, str, str, str], List[dict]] = defaultdict(list)
+    for r in rows:
+        if not r["probe_subgoal"] or not is_check_run(r["condition"]):
+            continue
+        cond = r["condition"]
+        kind = cond if cond.startswith("hide-") else ("probe-null" if cond.endswith("-null") else "probe")
+        groups[(r["split"], kind, r["probe_subgoal"], policy_seed(r["seed"]))].append(r)
+    per_seed = []
+    for (split, kind, sub, pseed), rs in sorted(groups.items()):
+        ok = [1.0 if r["probe_outcome"] == "achieved" else 0.0 for r in rs]
+        rate, lo, hi = bootstrap_mean(ok)
+        times = [r["probe_time"] for r in rs if r["probe_outcome"] == "achieved"]
+        blocked = [x for x, r in zip(ok, rs) if r["probe_path_blocked"]]
+        rec = {"split": split, "kind": kind, "subgoal": sub, "policy": pseed, "n": len(rs),
+               "achieved": rate, "ci_low": lo, "ci_high": hi,
+               "median_s": float(np.median(times)) if times else float("nan"),
+               "blocked_n": len(blocked), "blocked_achieved": float(np.mean(blocked)) if blocked else float("nan")}
+        for o in PROBE_OUTCOMES:
+            rec[o] = float(np.mean([r["probe_outcome"] == o for r in rs]))
+        by_room: Dict[str, List[float]] = defaultdict(list)
+        for x, r in zip(ok, rs):
+            by_room[r["room_type"] or "?"].append(x)
+        rec["by_room"] = {k: (float(np.mean(v)), len(v)) for k, v in sorted(by_room.items())}
+        per_seed.append(rec)
+    per_sub: Dict[Tuple[str, str, str], List[dict]] = defaultdict(list)
+    for rec in per_seed:
+        per_sub[(rec["split"], rec["kind"], rec["subgoal"])].append(rec)
+    overall = []
+    for (split, kind, sub), recs in sorted(per_sub.items()):
+        mean = float(np.mean([r["achieved"] for r in recs]))
+        overall.append({"split": split, "kind": kind, "subgoal": sub, "policies": len(recs),
+                        "achieved_mean": mean,
+                        "passed": (mean >= PASS_RATE) if kind == "probe" else None})
+    return per_seed, overall
 
 
 def paired_bootstrap(a: Sequence[float], b: Sequence[float], n_boot: int = 10000,
@@ -89,13 +161,33 @@ def compare(rows: List[dict], baseline: str, metric: str = "success") -> List[di
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
-    ap.add_argument("--baseline", default="rule")
+    ap.add_argument("--baseline", default="rule_masked")
     ap.add_argument("--metric", default="success", choices=OUTCOMES)
+    ap.add_argument("--probe", action="store_true", help="summarize direct subgoal checks instead")
     args = ap.parse_args()
     rows = load_runs(Path(args.root))
     if not rows:
         print("no episodes.csv found", file=sys.stderr)
         return 1
+    if args.probe:
+        per_seed, overall = probe_summary(rows)
+        if not per_seed:
+            print("no probe runs found", file=sys.stderr)
+            return 1
+        print("split\tkind\tsubgoal\tpolicy\tn\tachieved\t95% CI\tmedian_s\ttimeout\tcaught\t"
+              "blocked_achieved(n)\tby_room")
+        for r in per_seed:
+            rooms = " ".join(f"{k}:{v[0]:.2f}({v[1]})" for k, v in r["by_room"].items())
+            print(f"{r['split']}\t{r['kind']}\t{r['subgoal']}\t{r['policy']}\t{r['n']}\t{r['achieved']:.3f}\t"
+                  f"[{r['ci_low']:.2f}, {r['ci_high']:.2f}]\t{r['median_s']:.1f}\t{r['timeout']:.2f}\t"
+                  f"{r['caught']:.2f}\t{r['blocked_achieved']:.2f}({r['blocked_n']})\t{rooms}")
+        print(f"\nmean over policy seeds (pass: >= {PASS_RATE:.0%})")
+        for o in overall:
+            verdict = "" if o["passed"] is None else ("PASS" if o["passed"] else "FAIL")
+            print(f"{o['split']}\t{o['kind']}\t{o['subgoal']}\tpolicies={o['policies']}\t"
+                  f"{o['achieved_mean']:.3f}\t{verdict}")
+        return 0
+    rows = [r for r in rows if not is_check_run(r["condition"])]
     print("split\tcondition\tlatency\tn\tsuccess\tcaught\ttrapped\ttimeout\ttime_to_feed")
     for s in summarize(rows):
         print(f"{s['split']}\t{s['condition']}\t{s['latency']}\t{s['n']}\t{s['success']:.3f}\t"

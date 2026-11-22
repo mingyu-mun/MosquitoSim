@@ -6,9 +6,13 @@ namespace MosquitoSim
     /// <summary>
     /// The human. Stages 0-1: standing still. Stage 2+: walks between
     /// waypoints (stand, walk, and a turn on the spot when the next leg points
-    /// back), becomes alert when the mosquito buzzes near the head or bites,
-    /// and looks at the mosquito while alert. Stepped by the agent so that the
-    /// order of updates is fixed. The phase drives the character animation.
+    /// back) and becomes alert when the mosquito buzzes near the head or bites.
+    /// Alert (11/22): stops on the spot for 3-5 s, turns toward the buzzing
+    /// (1 s) and sweeps the head left and right. The mosquito is spotted when it is within 60° of the head
+    /// direction and the line of sight is clear; then the human keeps looking
+    /// at it, the alert restarts, and the hand swats once it is within reach
+    /// (HandController). Stepped by the agent so that the order of updates is
+    /// fixed. The phase drives the character animation.
     /// </summary>
     public class HumanController : MonoBehaviour
     {
@@ -17,7 +21,13 @@ namespace MosquitoSim
 
         public const float BuzzRadius = 0.5f;
         public const float BuzzToAlert = 0.4f;
-        public const float AlertSeconds = 3f;
+        public const float AlertMinSeconds = 3f, AlertMaxSeconds = 5f;
+        /// <summary>Half-angle of the field of view around the head direction.</summary>
+        public const float ViewHalfAngle = 60f;
+        /// <summary>Head sweep while alert: ±ScanAmplitude degrees, one side per ScanSideSeconds.</summary>
+        public const float ScanAmplitude = 60f, ScanSideSeconds = 1f;
+        /// <summary>Turning the body toward the buzzing when the alert starts.</summary>
+        public const float SearchTurnSeconds = 1f;
         /// <summary>Direction changes larger than this use the turn (180°) animation.</summary>
         public const float TurnAngle = 100f;
         public const float WalkTurnRate = 240f; // deg/s for smaller changes while walking
@@ -36,6 +46,12 @@ namespace MosquitoSim
         public bool Walking { get; private set; }
         public bool Alert => m_AlertTimer > 0f;
         public float AlertRemaining => Mathf.Max(0f, m_AlertTimer);
+        /// <summary>Alert and the mosquito is in view right now.</summary>
+        public bool Spotted { get; private set; }
+        /// <summary>The mosquito has been spotted at least once since the last reset (logging).</summary>
+        public bool SpottedEver { get; private set; }
+        /// <summary>HIDE scenario: alert, but frozen (no looking, no clock) until BeginSearch.</summary>
+        public bool SearchSuspended { get; private set; }
         public Vector3 HeadPos => head != null ? head.position : transform.position + Vector3.up * 1.6f;
         public Vector3 Chest => transform.position + Vector3.up * 1.2f;
         public Vector3 GazeDir { get; private set; }
@@ -43,8 +59,9 @@ namespace MosquitoSim
         System.Random m_Rng;
         readonly List<Vector3> m_Waypoints = new List<Vector3>();
         int m_Wp;
-        float m_Speed, m_Pause, m_AlertTimer, m_Buzz, m_BiteTimer, m_BiteChance, m_TurnTimer;
-        Quaternion m_TurnFrom, m_TurnTo;
+        float m_Speed, m_Pause, m_AlertTimer, m_AlertDuration, m_ScanTime, m_Buzz, m_BiteTimer, m_BiteChance, m_TurnTimer;
+        float m_SearchTurnTimer = -1f; // < 0: not turning toward a sound
+        Quaternion m_TurnFrom, m_TurnTo, m_SearchFrom, m_SearchTo;
 
         void Awake()
         {
@@ -68,6 +85,10 @@ namespace MosquitoSim
             m_Rng = rng;
             m_BiteChance = biteChance;
             m_AlertTimer = 0f;
+            m_ScanTime = 0f;
+            Spotted = SpottedEver = false;
+            SearchSuspended = false;
+            m_SearchTurnTimer = -1f;
             m_Buzz = 0f;
             m_BiteTimer = 0f;
             Velocity = Vector3.zero;
@@ -115,9 +136,10 @@ namespace MosquitoSim
 
         public void Step(float dt, Vector3 mosquitoPos, bool mosquitoLanded)
         {
-            // Walking
+            if (SearchSuspended) { Velocity = Vector3.zero; Spotted = false; return; }
+            // Walking (paused on the spot while alert)
             Velocity = Vector3.zero;
-            if (!Walking)
+            if (!Walking || Alert)
             {
                 CurrentPhase = Phase.Stand;
             }
@@ -182,7 +204,7 @@ namespace MosquitoSim
             else m_Buzz = Mathf.Max(0f, m_Buzz - 0.5f * dt);
             if (m_Buzz >= BuzzToAlert)
             {
-                m_AlertTimer = AlertSeconds;
+                StartAlert(mosquitoPos); // heard it: turn toward the buzzing
                 m_Buzz = 0f;
             }
 
@@ -192,7 +214,7 @@ namespace MosquitoSim
                 if (m_BiteTimer >= 1f)
                 {
                     m_BiteTimer -= 1f;
-                    if (m_Rng.NextDouble() < m_BiteChance) m_AlertTimer = AlertSeconds;
+                    if (m_Rng.NextDouble() < m_BiteChance) StartAlert();
                 }
             }
             else
@@ -200,8 +222,82 @@ namespace MosquitoSim
                 m_BiteTimer = 0f;
             }
 
-            if (m_AlertTimer > 0f) m_AlertTimer -= dt;
-            GazeDir = Alert ? (mosquitoPos - HeadPos).normalized : transform.forward;
+            // Looking: sweep the head while alert; lock on while the mosquito is in view.
+            Spotted = false;
+            if (Alert)
+            {
+                Vector3 toMosq = mosquitoPos - HeadPos;
+                bool turning = m_SearchTurnTimer >= 0f;
+                if (turning)
+                {
+                    m_SearchTurnTimer += dt;
+                    float k = Mathf.Clamp01(m_SearchTurnTimer / SearchTurnSeconds);
+                    transform.rotation = Quaternion.Slerp(m_SearchFrom, m_SearchTo, k * k * (3f - 2f * k));
+                    if (k >= 1f) m_SearchTurnTimer = -1f;
+                }
+                // While turning the head faces forward; the sweep starts once the body has turned.
+                Vector3 scan = turning ? transform.forward
+                    : Quaternion.Euler(0f, ScanAmplitude * Mathf.Sin(Mathf.PI * m_ScanTime / ScanSideSeconds), 0f) * transform.forward;
+                Vector3 look = GazeDir.sqrMagnitude > 0.5f ? GazeDir : scan;
+                bool inView = Vector3.Angle(look, toMosq) <= ViewHalfAngle || Vector3.Angle(scan, toMosq) <= ViewHalfAngle;
+                if (inView && CanSee(mosquitoPos))
+                {
+                    Spotted = SpottedEver = true;
+                    GazeDir = toMosq.normalized;
+                    m_AlertTimer = m_AlertDuration; // keeps watching: the alert starts over
+                }
+                else
+                {
+                    if (!turning) m_ScanTime += dt;
+                    GazeDir = scan;
+                }
+                m_AlertTimer -= dt;
+                if (m_AlertTimer <= 0f) GazeDir = transform.forward;
+            }
+            else
+            {
+                GazeDir = transform.forward;
+            }
+        }
+
+        /// <summary>
+        /// Become alert for 3-5 s (sampled per alert from the episode RNG). With a
+        /// sound position (buzzing) the body first turns toward it over 1 s;
+        /// bites raise the alert without a turn.
+        /// </summary>
+        public void StartAlert(Vector3? soundFrom = null)
+        {
+            if (!Alert) m_ScanTime = 0f;
+            m_AlertDuration = Range(AlertMinSeconds, AlertMaxSeconds);
+            m_AlertTimer = m_AlertDuration;
+            if (soundFrom.HasValue)
+            {
+                Vector3 d = soundFrom.Value - transform.position;
+                d.y = 0f;
+                if (d.sqrMagnitude > 1e-4f)
+                {
+                    m_SearchFrom = transform.rotation;
+                    m_SearchTo = Quaternion.LookRotation(d.normalized, Vector3.up);
+                    m_SearchTurnTimer = 0f;
+                }
+            }
+        }
+
+        /// <summary>HIDE scenario: alert (so planners see it) but frozen until BeginSearch.</summary>
+        public void PrepareAlert()
+        {
+            StartAlert();
+            SearchSuspended = true;
+            Velocity = Vector3.zero;
+            CurrentPhase = Phase.Stand;
+        }
+
+        /// <summary>HIDE scenario: the choice is made; turn toward the buzzing and start looking.</summary>
+        public void BeginSearch(Vector3 soundFrom)
+        {
+            SearchSuspended = false;
+            Spotted = SpottedEver = false;
+            StartAlert(soundFrom);
         }
 
         /// <summary>Line of sight from the head, ignoring the human's own body.</summary>

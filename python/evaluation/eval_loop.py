@@ -19,10 +19,25 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mosquitosim.channel import command_message  # noqa: E402
 from mosquitosim.latency import CommandScheduler, LatencyMode  # noqa: E402
+from mosquitosim.masked_rule import masked_rule  # noqa: E402
 from mosquitosim.planner_client import PlanResult  # noqa: E402
 from mosquitosim.subgoals import parse_planner_output  # noqa: E402
 
-CONDITIONS = ("fixed", "rule", "vlm", "vlm_noimg")
+# fixed        APPROACH the nearest skin (lower reference)
+# rule_masked  hand-written rule on the same view as the VLM (mosquitosim.masked_rule)
+# rule_oracle  Unity's rule that knows hidden / clear_path (upper reference)
+# vlm          VLM with the instruction and the five images
+# vlm_noimg    the same VLM with the instruction only
+# probe        direct subgoal check: Unity's probe planner (planner=4), no planner requests
+CONDITIONS = ("fixed", "rule_masked", "rule_oracle", "vlm", "vlm_noimg", "probe")
+CONDITION_ALIASES = {"rule": "rule_oracle"}  # runs before 11/22 called the oracle rule "rule"
+NO_LATENCY_CONDITIONS = ("fixed", "rule_masked", "rule_oracle", "probe")
+# Extra episode_end fields: room shape for every run, probe results for probe runs.
+EPISODE_FIELDS = ("episode", "room", "stage", "success", "caught", "trapped", "timeout", "sim_time",
+                  "collisions", "decisions", "reward", "room_type", "layout")
+PROBE_FIELDS = ("probe_subgoal", "probe_target", "probe_outcome", "probe_time", "probe_start_dist",
+                "probe_min_dist", "probe_path_blocked", "probe_target_height", "probe_target_hidden",
+                "probe_spotted", "probe_valid", "probe_wait")
 _EPISODE_RE = re.compile(r"r(\d+)e(\d+)$")
 
 
@@ -47,6 +62,7 @@ class EvalConfig:
     max_steps: int = 2_000_000
 
     def __post_init__(self) -> None:
+        self.condition = CONDITION_ALIASES.get(self.condition, self.condition)
         if self.condition not in CONDITIONS:
             raise ValueError(f"condition must be one of {CONDITIONS}")
 
@@ -133,8 +149,7 @@ class EvalLoop:
         self.scheduler.drop_room(room)
         if not self._counted(msg):
             return
-        rec = {k: msg.get(k) for k in ("episode", "room", "stage", "success", "caught", "trapped",
-                                       "timeout", "sim_time", "collisions", "decisions", "reward")}
+        rec = {k: msg.get(k) for k in EPISODE_FIELDS + PROBE_FIELDS}
         rec["condition"] = self.cfg.condition
         rec["latency"] = str(self.cfg.latency)
         self.result.episodes.append(rec)
@@ -149,6 +164,8 @@ class EvalLoop:
             return
 
         cond = self.cfg.condition
+        if cond == "probe":
+            raise RuntimeError("probe runs use Unity's probe planner (planner=4); a planner request arrived")
         log = {
             "episode": episode, "room": room, "decision": decision, "sim_time": msg.get("sim_time"),
             "condition": cond, "latency": str(self.cfg.latency), "events": msg.get("events"),
@@ -157,9 +174,18 @@ class EvalLoop:
             "candidates": msg.get("candidates"), "images": msg.get("images"),
             "instruction": msg.get("instruction"), "requested_at": self.now,
         }
+        # What the masked rule would say here, logged under every condition so
+        # decisions can be compared on the same situation.
+        view = msg.get("view")
+        log["rule_masked_command"] = masked_rule(view) if view is not None else None
 
-        if cond in ("fixed", "rule"):
-            cmd = msg[f"{cond}_command"]
+        if cond in NO_LATENCY_CONDITIONS:
+            if cond == "rule_masked":
+                if view is None:
+                    raise ValueError("rule_masked needs the request's 'view' (Unity build older than 11/22?)")
+                cmd = log["rule_masked_command"]
+            else:
+                cmd = msg["fixed_command" if cond == "fixed" else "rule_command"]
             log.update(raw=None, command=cmd, valid=True, service_time=0.0, wall_time=0.0, delay=0.0)
             self.scheduler.schedule(room, episode, decision, cmd, self.now)
             self._log(log)

@@ -26,6 +26,8 @@ namespace MosquitoSim
         public EnvSplit envSplit = EnvSplit.Train;
         public PlannerKind planner = PlannerKind.Rule;
         public int evalSeed;
+        [Tooltip("Planner = Probe: -1 cycles through the stage's subgoals, 0 APPROACH, 1 HIDE, 2 EVADE, 3 MOVE_TO")]
+        public int probeSubgoal = -1;
         [Tooltip("Autopilot: every mosquito flies a scripted straight line to its target.\n" +
                  "Keyboard: you fly the mosquito you are watching (WASD, Space up, Shift down; relative to the camera), the others use the autopilot.")]
         public Flight flight = Flight.Autopilot;

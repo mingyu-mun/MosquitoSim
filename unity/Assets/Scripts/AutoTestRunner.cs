@@ -232,6 +232,9 @@ namespace MosquitoSim
             }
 
             Shot("05_top_end", o + new Vector3(0f, 2.35f, -0.01f), o, 110f);
+            foreach (var kv in MosquitoAgent.ProbeStats)
+                Diagnose("점검", $"{kv.Key} 시행 {kv.Value.x:0}, 달성 {kv.Value.y:0}, 달성까지 평균 " +
+                    (kv.Value.y > 0 ? (kv.Value.z / kv.Value.y).ToString("0.0") : "-") + "초");
             Diagnose("결과", $"에피소드 {MosquitoAgent.Episodes}, 성공 {MosquitoAgent.Successes}, 잡힘 {MosquitoAgent.Caught}, " +
                            $"트랩 {MosquitoAgent.Trapped}, 결정 {MosquitoAgent.Decisions}");
             Diagnose("관측", $"점검 {m_ObsChecks}회, 범위·NaN·원-핫 이상 {m_BadObs}회");

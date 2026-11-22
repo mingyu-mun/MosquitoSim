@@ -57,6 +57,21 @@ namespace MosquitoSim
         bool m_Succeeded, m_Caught, m_Trapped, m_HasEpisode;
         int m_Collisions;
 
+        // Direct subgoal check (planner = Probe): one subgoal per episode, 8 s.
+        const float k_HideStartMin = 0.5f, k_HideStartMax = 1.0f; // HIDE scenario: start this far from the head
+        const float k_HideMaxWait = 10f;                           // HIDE scenario: search starts anyway after this
+        const float k_ProbeHandMin = 0.4f, k_ProbeHandMax = 0.6f;  // EVADE: start this far from the hand
+        const float k_ProbeSwingDelay = 0.5f;                       // EVADE: the hand swings after this
+        bool m_Probe, m_ProbeStarted, m_ProbeDone, m_ProbeTargetHidden, m_ProbePathBlocked;
+        // HIDE scenario (probe HIDE, or planner evaluation with hide_scenario): frozen until a HIDE choice,
+        // then the human turns toward the buzzing and looks around; spotted = fail, alert over = success.
+        bool m_HideScenario, m_Searching, m_ProbeValid;
+        float m_WaitStart, m_SearchStart, m_ProbeWait;
+        Vector3 m_SoundPos;
+        Subgoal m_ProbeSubgoal;
+        string m_ProbeTarget, m_ProbeOutcome;
+        float m_ProbeTime, m_ProbeStartDist, m_ProbeMinDist, m_ProbeHold, m_ProbeTargetHeight;
+
         public PlannerCommand CurrentCommand => m_Tracker.Command;
         public float SimTime => m_SimTime;
         public Vector3 SubgoalTarget => m_Tracker.Target;
@@ -69,9 +84,11 @@ namespace MosquitoSim
 
         /// <summary>Episode outcome counts across all agents (read by AutoTestRunner).</summary>
         public static int Episodes, Successes, Caught, Trapped, Decisions;
+        /// <summary>Direct subgoal checks per subgoal wire name: trials, achieved, seconds to achieve.</summary>
+        public static readonly Dictionary<string, Vector3> ProbeStats = new Dictionary<string, Vector3>();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = 0; }
+        static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = 0; ProbeStats.Clear(); }
 
         public override void Initialize()
         {
@@ -98,6 +115,7 @@ namespace MosquitoSim
 
             m_Area.ResetEpisode(m_P, m_Stage, m_Rng);
             m_Motor.ResetMotor(m_Area.SampleFreePoint(m_Rng, 1.0f));
+            SetUpProbe();
 
             m_SimTime = 0f;
             m_FeedTimer = 0f;
@@ -113,6 +131,7 @@ namespace MosquitoSim
             // Until the first answer arrives the mosquito approaches the nearest skin.
             SetCommand(Planners.Fixed(Context()), null);
             m_Events.Add("episode_start");
+            if (m_HideScenario) m_Events.Add("hide_scenario");
             m_LastDecisionTime = -999f;
             Decide(false);
         }
@@ -157,10 +176,19 @@ namespace MosquitoSim
             // Apply commands that arrived from Python since the last step.
             PollExternal();
 
+            if (m_HideScenario && !m_Searching)
+            {
+                // Waiting for the HIDE choice: mosquito and human hold still.
+                if (m_SimTime - m_WaitStart > k_HideMaxWait) BeginHideSearch(null);
+                else return;
+            }
+
             var cmd = m_Tracker.Command;
             SkinZone landing = cmd.Subgoal == Subgoal.Approach && m_TargetSkin != null && !m_TargetSkin.covered
                 ? m_TargetSkin : null;
-            MotorStepResult r = m_Motor.Step(action, dt, landing, m_P.LandingRadius, m_P.LandingSpeed);
+            // HIDE scenario without a valid choice: the mosquito stays where it is.
+            bool hold = m_HideScenario && !m_ProbeValid;
+            MotorStepResult r = hold ? default(MotorStepResult) : m_Motor.Step(action, dt, landing, m_P.LandingRadius, m_P.LandingSpeed);
             Vector3 pos = transform.position;
 
             if (r.HitTrap)
@@ -180,6 +208,7 @@ namespace MosquitoSim
             // Human and hand
             var human = m_Area.human;
             var hand = m_Area.hand;
+            if (m_HideScenario && m_Stage < 2) human.Step(dt, pos, m_Motor.IsLanded); // the search runs at any stage
             if (m_Stage >= 2)
             {
                 human.Step(dt, pos, m_Motor.IsLanded);
@@ -197,12 +226,37 @@ namespace MosquitoSim
                 m_PrevHandActive = hand.Active;
             }
 
+            if (m_HideScenario && !m_ProbeDone)
+            {
+                if (m_ProbeValid) m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, Vector3.Distance(pos, m_Tracker.Target));
+                string outcome = human.Spotted ? "spotted" : !human.Alert ? "achieved" : null;
+                if (outcome != null)
+                {
+                    FinishProbe(outcome);
+                    EndEpisode();
+                    return;
+                }
+            }
+
             // Subgoal shaping and end
             m_Tracker.UpdateTarget(ResolveTarget(m_Tracker.Command, null));
             if (!m_Motor.IsLanded) AddReward(k_ProgressCoef * m_Tracker.Shaping(pos));
             else m_Tracker.Shaping(pos);
             bool hazard = m_Stage >= 2 && hand.Active;
             SubgoalStatus status = m_Tracker.Step(m_SimTime, dt, pos, m_Motor.IsLanded, hazard);
+            if (status != SubgoalStatus.Running && m_P.Planner == PlannerKind.Random)
+            {
+                // Training progress per subgoal (TensorBoard). Mid-switched subgoals are not counted.
+                string n = PlannerCommand.WireName(m_Tracker.Command.Subgoal);
+                var stats = Academy.Instance.StatsRecorder;
+                stats.Add("Subgoal/" + n + "/Achieved", status == SubgoalStatus.Achieved ? 1f : 0f);
+                if (status == SubgoalStatus.Achieved) stats.Add("Subgoal/" + n + "/Seconds", m_SimTime - m_Tracker.StartTime);
+            }
+            if (m_Probe && !m_HideScenario && m_ProbeStarted && !m_ProbeDone && JudgeProbe(dt, pos, status))
+            {
+                EndEpisode();
+                return;
+            }
             if (status == SubgoalStatus.Achieved)
             {
                 if (m_Tracker.Command.Subgoal != Subgoal.Approach) AddReward(k_AchieveBonus);
@@ -250,11 +304,13 @@ namespace MosquitoSim
                 Candidates = m_Area.Candidates.Current,
                 ExcludedSkins = m_Excluded,
                 Current = m_Tracker.Command,
+                HideSituation = m_HideScenario && !m_Searching,
             };
         }
 
         void Decide(bool decisionStep)
         {
+            if ((m_Probe || m_HideScenario) && m_DecisionIndex > 0) { m_Events.Clear(); return; } // one decision only
             bool feeding = m_Motor.IsLanded && m_Tracker.Command.Subgoal == Subgoal.Approach;
             bool random = m_P.Planner == PlannerKind.Random;
 
@@ -294,6 +350,10 @@ namespace MosquitoSim
                 case PlannerKind.External:
                     SendRequest(ctx);
                     break;
+                case PlannerKind.Probe:
+                    Apply(Planners.Probe(ctx, m_Rng, m_ProbeSubgoal), snapshot, ctx); // HIDE: SetCommand starts the search
+                    if (!m_HideScenario) StartProbe(snapshot);
+                    break;
             }
 
             m_LastDecisionTime = m_SimTime;
@@ -323,7 +383,10 @@ namespace MosquitoSim
             var j = new JsonBuilder();
             j.BeginObject().Key("type").Value("request");
             WriteDecisionFields(j, ctx);
-            j.Key("instruction").Value(StateDescriber.Describe(ctx, episodeSeconds));
+            // The masked rule planner (Python) reads only "view"; the instruction is rendered from it.
+            PlannerView view = StateDescriber.View(ctx, episodeSeconds);
+            j.Key("view"); view.WriteJson(j);
+            j.Key("instruction").Value(StateDescriber.Describe(view));
 
             if (ch.CaptureImages && m_Area.cameras != null)
             {
@@ -336,7 +399,7 @@ namespace MosquitoSim
                 j.EndArray();
             }
 
-            j.Key("rule_command"); Planners.Rule(ctx).WriteJson(j);
+            j.Key("rule_command"); Planners.Rule(ctx).WriteJson(j); // oracle rule: knows hidden / clear_path
             j.Key("fixed_command"); Planners.Fixed(ctx).WriteJson(j);
             j.EndObject();
             ch.Send(j.ToString());
@@ -354,7 +417,7 @@ namespace MosquitoSim
             j.EndArray();
             j.Key("current_command"); ctx.Current.WriteJson(j);
             j.Key("landed").Value(ctx.Landed);
-            j.Key("alert").Value(m_Stage >= 2 && ctx.Human.Alert);
+            j.Key("alert").Value(ctx.AlertKnown);
             j.Key("hand_active").Value(m_Stage >= 2 && ctx.Hand.Active);
             j.Key("hand_dist").Value(Vector3.Distance(ctx.Hand.Position, ctx.MosquitoPos));
 
@@ -394,6 +457,7 @@ namespace MosquitoSim
             while (ch.TryDequeue(m_Area.roomIndex, out PlannerInMessage m))
             {
                 if (m.episode != m_EpisodeId) continue; // answer to a previous episode
+                if (m_HideScenario && m_Searching) continue; // one choice per HIDE scenario
                 if (!PlannerCommand.TryFromDto(m.command, out PlannerCommand cmd)) continue;
                 m_Snapshots.TryGetValue(m.decision, out List<Candidate> snapshot);
                 if (!IsValidTarget(cmd, snapshot)) continue;
@@ -403,6 +467,7 @@ namespace MosquitoSim
 
         bool IsValidTarget(PlannerCommand cmd, List<Candidate> snapshot)
         {
+            if (m_HideScenario && cmd.Subgoal != Subgoal.Hide) return false; // only a hiding spot is asked for
             switch (cmd.Subgoal)
             {
                 case Subgoal.Approach:
@@ -425,6 +490,7 @@ namespace MosquitoSim
                 if (skin != null) m_TargetSkin = skin;
             }
             m_Tracker.Set(cmd, ResolveTarget(cmd, snapshot), m_SimTime, transform.position);
+            if (m_HideScenario && !m_Searching && cmd.Subgoal == Subgoal.Hide) BeginHideSearch(snapshot);
         }
 
         Vector3 ResolveTarget(PlannerCommand cmd, List<Candidate> snapshot)
@@ -448,6 +514,8 @@ namespace MosquitoSim
         void RecordPreviousEpisode()
         {
             if (!m_HasEpisode) return;
+            if ((m_Probe || m_HideScenario) && !m_ProbeDone)
+                FinishProbe(m_Caught ? "caught" : m_Trapped ? "trapped" : "timeout");
             Episodes++;
             if (m_Succeeded) Successes++;
             if (m_Caught) Caught++;
@@ -476,9 +544,163 @@ namespace MosquitoSim
                     .Key("collisions").Value(m_Collisions)
                     .Key("decisions").Value(m_DecisionIndex)
                     .Key("reward").Value(GetCumulativeReward())
-                    .EndObject();
+                    .Key("room_type").Value(m_Area.Generator.Current.ToString())
+                    .Key("layout").Value(m_Area.Obstacles.Layout);
+                if (m_Probe || m_HideScenario)
+                {
+                    j.Key("probe_subgoal").Value(PlannerCommand.WireName(m_ProbeSubgoal))
+                        .Key("probe_target").Value(m_ProbeTarget)
+                        .Key("probe_outcome").Value(m_ProbeOutcome)
+                        .Key("probe_time").Value(m_ProbeTime)
+                        .Key("probe_start_dist").Value(m_ProbeStartDist)
+                        .Key("probe_min_dist").Value(m_ProbeMinDist)
+                        .Key("probe_path_blocked").Value(m_ProbePathBlocked)
+                        .Key("probe_target_height").Value(m_ProbeTargetHeight)
+                        .Key("probe_target_hidden").Value(m_ProbeTargetHidden)
+                        .Key("probe_spotted").Value((m_Stage >= 2 || m_HideScenario) && m_Area.human.SpottedEver)
+                        .Key("probe_valid").Value(!m_HideScenario || m_ProbeValid)
+                        .Key("probe_wait").Value(m_ProbeWait);
+                }
+                j.EndObject();
                 ch.Send(j.ToString());
             }
+        }
+
+        // ---------------------------------------------------------------- direct subgoal check
+
+        /// <summary>
+        /// Planner = Probe: choose this episode's subgoal. HIDE (probe, or any planner with
+        /// hide_scenario): the HIDE scenario. The mosquito starts 0.5-1.0 m from the head,
+        /// in the human's sight; mosquito and human hold still (the human already alert)
+        /// until a HIDE choice arrives. EVADE: the mosquito starts near the hand, which
+        /// swings after a fixed delay. The other subgoals start like any episode.
+        /// </summary>
+        void SetUpProbe()
+        {
+            m_Probe = m_P.Planner == PlannerKind.Probe;
+            m_ProbeStarted = m_ProbeDone = false;
+            m_ProbeOutcome = null;
+            m_ProbeTarget = null;
+            m_ProbeTime = m_ProbeHold = m_ProbeWait = 0f;
+            m_Searching = m_ProbeValid = false;
+
+            if (m_Probe)
+            {
+                var allowed = Planners.StageSubgoals(m_Stage);
+                m_ProbeSubgoal = m_P.ProbeSubgoal >= 0 ? (Subgoal)m_P.ProbeSubgoal : allowed[m_EpisodeIndex % allowed.Count];
+                if (!allowed.Contains(m_ProbeSubgoal))
+                {
+                    Debug.LogWarning($"probe: {m_ProbeSubgoal} is not used in stage {m_Stage}; checking APPROACH");
+                    m_ProbeSubgoal = Subgoal.Approach;
+                }
+            }
+            m_HideScenario = m_Stage >= 1 && ((m_Probe && m_ProbeSubgoal == Subgoal.Hide) ||
+                                              (m_P.Planner == PlannerKind.External && m_P.HideScenario));
+
+            var human = m_Area.human;
+            if (m_HideScenario)
+            {
+                m_ProbeSubgoal = Subgoal.Hide;
+                if (TryPlaceNear(human.HeadPos, k_HideStartMin, k_HideStartMax, float.MaxValue, out Vector3 p)) m_Motor.ResetMotor(p);
+                m_SoundPos = transform.position;
+                m_WaitStart = 0f; // the episode clock restarts right after this
+                human.PrepareAlert();
+            }
+            else if (m_Probe && m_ProbeSubgoal == Subgoal.Evade)
+            {
+                var hand = m_Area.hand;
+                if (TryPlaceNear(hand.Position, k_ProbeHandMin, k_ProbeHandMax, HandController.Reach, out Vector3 p)) m_Motor.ResetMotor(p);
+                hand.ForceSwing(k_ProbeSwingDelay);
+            }
+        }
+
+        /// <summary>HIDE scenario: the choice is in (or the wait ran out); the human turns and looks.</summary>
+        void BeginHideSearch(List<Candidate> snapshot)
+        {
+            m_Searching = true;
+            m_ProbeValid = snapshot != null;
+            m_ProbeWait = m_SimTime - m_WaitStart;
+            m_SearchStart = m_SimTime;
+            if (m_ProbeValid) StartProbe(snapshot);
+            else { m_ProbeStarted = true; m_ProbeStartDist = m_ProbeMinDist = 0f; }
+            m_Area.human.BeginSearch(m_SoundPos);
+        }
+
+        /// <summary>A free point <paramref name="min"/>-<paramref name="max"/> m from <paramref name="center"/>,
+        /// within <paramref name="shoulderReach"/> of the human's shoulder height, in the human's sight.</summary>
+        bool TryPlaceNear(Vector3 center, float min, float max, float shoulderReach, out Vector3 p)
+        {
+            var human = m_Area.human;
+            Vector3 shoulder = human.transform.TransformPoint(new Vector3(0.22f, 1.35f, 0f));
+            for (int i = 0; i < 60; i++)
+            {
+                Vector3 dir = new Vector3((float)m_Rng.NextDouble() * 2f - 1f, (float)m_Rng.NextDouble() * 1.2f - 0.6f,
+                    (float)m_Rng.NextDouble() * 2f - 1f);
+                if (dir.sqrMagnitude < 1e-3f) continue;
+                p = center + dir.normalized * (min + (float)m_Rng.NextDouble() * (max - min));
+                if (Vector3.Distance(p, shoulder) > shoulderReach) continue;
+                if (Physics.CheckSphere(p, 0.05f, ~(1 << Layers.Labels), QueryTriggerInteraction.Ignore)) continue;
+                if (!human.CanSee(p)) continue;
+                return true;
+            }
+            p = transform.position;
+            return false;
+        }
+
+        void StartProbe(List<Candidate> snapshot)
+        {
+            Vector3 pos = transform.position;
+            var cmd = m_Tracker.Command;
+            m_ProbeStarted = true;
+            m_ProbeTarget = cmd.Target;
+            m_ProbeStartDist = m_ProbeMinDist = Vector3.Distance(pos, m_Tracker.Target);
+            m_ProbePathBlocked = cmd.Subgoal != Subgoal.Evade &&
+                Physics.Linecast(pos, m_Tracker.Target, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore);
+            m_ProbeTargetHeight = m_Tracker.Target.y - m_Area.human.transform.position.y;
+            m_ProbeTargetHidden = false;
+            if (snapshot != null)
+                foreach (var c in snapshot)
+                    if (c.Id == cmd.Target) m_ProbeTargetHidden = c.Hidden;
+        }
+
+        /// <summary>
+        /// Success rules (11/22): APPROACH lands on the target skin (another skin fails);
+        /// MOVE_TO reaches 0.15 m; (HIDE is the scenario: see SetUpProbe); EVADE is not caught until the swing ends or it is
+        /// 1.5 m from the hand. All within 8 s. Returns true when the probe has ended.
+        /// </summary>
+        bool JudgeProbe(float dt, Vector3 pos, SubgoalStatus status)
+        {
+            float d = Vector3.Distance(pos, m_Tracker.Target);
+            m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, d);
+            string outcome = null;
+            switch (m_ProbeSubgoal)
+            {
+                case Subgoal.Approach:
+                    if (m_Motor.IsLanded && m_Motor.LandedZone != null)
+                        outcome = m_Motor.LandedZone.id == m_ProbeTarget ? "achieved" : "wrong_skin";
+                    break;
+                default: // MOVE_TO, EVADE: the training rules
+                    if (status == SubgoalStatus.Achieved) outcome = "achieved";
+                    break;
+            }
+            if (outcome == null && m_SimTime - m_Tracker.StartTime > SubgoalConstants.TimeoutSeconds) outcome = "timeout";
+            if (outcome == null) return false;
+            FinishProbe(outcome);
+            return true;
+        }
+
+        void FinishProbe(string outcome)
+        {
+            m_ProbeDone = true;
+            m_ProbeOutcome = outcome;
+            m_ProbeTime = m_SimTime - (m_HideScenario ? m_SearchStart : m_Tracker.StartTime);
+            string n = PlannerCommand.WireName(m_ProbeSubgoal);
+            ProbeStats.TryGetValue(n, out Vector3 s);
+            s.x += 1f;
+            if (outcome == "achieved") { s.y += 1f; s.z += m_ProbeTime; }
+            ProbeStats[n] = s;
+            var stats = Academy.Instance.StatsRecorder;
+            stats.Add("Probe/" + n + "/Achieved", outcome == "achieved" ? 1f : 0f);
         }
 
         /// <summary>

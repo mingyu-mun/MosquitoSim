@@ -22,12 +22,16 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from eval_loop import CONDITIONS, EvalConfig, EvalLoop  # noqa: E402
+from eval_loop import (CONDITION_ALIASES, CONDITIONS, EPISODE_FIELDS, NO_LATENCY_CONDITIONS,  # noqa: E402
+                       PROBE_FIELDS, EvalConfig, EvalLoop)
 from mosquitosim.channel import MessageQueue, config_message, make_side_channel  # noqa: E402
 from mosquitosim.latency import LatencyMode  # noqa: E402
 
 SPLITS = {"val": 1, "familiar": 2, "new_room": 3, "new_object": 4, "new_human": 5, "net": 6}
 PLANNER_EXTERNAL = 3.0
+PLANNER_PROBE = 4.0
+# --probe-subgoal -> Unity's probe_subgoal (Subgoal enum values; -1 cycles through the stage's subgoals)
+PROBE_SUBGOALS = {"cycle": -1, "APPROACH": 0, "HIDE": 1, "EVADE": 2, "MOVE_TO": 3}
 
 
 class MLAgentsEnv:
@@ -80,7 +84,7 @@ def main() -> int:
     ap.add_argument("--policy", required=True, help="ONNX policy exported by mlagents-learn")
     ap.add_argument("--stage", type=int, required=True)
     ap.add_argument("--split", choices=sorted(SPLITS), required=True)
-    ap.add_argument("--condition", choices=CONDITIONS, required=True)
+    ap.add_argument("--condition", choices=CONDITIONS + tuple(CONDITION_ALIASES), required=True)
     ap.add_argument("--latency", default="measured", help="measured | fixed:<s> | realtime")
     ap.add_argument("--eval-seed", type=int, default=1)
     ap.add_argument("--policy-seed", type=int, default=1, help="training seed of --policy (for pairing)")
@@ -90,23 +94,39 @@ def main() -> int:
     ap.add_argument("--image-size", type=int, default=448)
     ap.add_argument("--out", default="results/eval")
     ap.add_argument("--port", type=int, default=5105)
+    ap.add_argument("--probe-subgoal", choices=list(PROBE_SUBGOALS), default="cycle",
+                    help="--condition probe: the subgoal to check")
+    ap.add_argument("--scenario", choices=("none", "hide"), default="none",
+                    help="hide: every episode is the HIDE scenario; the condition's planner picks the spot")
+    ap.add_argument("--null-policy", action="store_true",
+                    help="act with zeros instead of --policy (do-nothing baseline for the probe)")
     args = ap.parse_args()
 
     latency = LatencyMode.parse(args.latency)
-    if args.condition in ("fixed", "rule") and latency.kind != "measured":
-        print("note: fixed/rule have no planner latency; --latency is ignored")
-    run_name = (f"{args.condition}__{args.split}__p{args.policy_seed}s{args.eval_seed}__"
+    args.condition = CONDITION_ALIASES.get(args.condition, args.condition)
+    if args.condition in NO_LATENCY_CONDITIONS and latency.kind != "measured":
+        print(f"note: {args.condition} has no planner latency; --latency is ignored")
+    probe = args.condition == "probe"
+    label = args.condition
+    if probe:
+        label = f"probe-{args.probe_subgoal}" + ("-null" if args.null_policy else "")
+    elif args.scenario == "hide":
+        label = f"hide-{args.condition}"
+    run_name = (f"{label}__{args.split}__p{args.policy_seed}s{args.eval_seed}__"
                 f"{str(latency).replace(':', '')}")
     out = Path(args.out) / run_name
     out.mkdir(parents=True, exist_ok=True)
 
     from mosquitosim.onnx_policy import OnnxPolicy
     from mosquitosim.planner_client import PlannerClient
-    policy = OnnxPolicy(args.policy)
+    policy = (lambda obs: np.zeros((len(obs), 3), np.float32)) if args.null_policy else OnnxPolicy(args.policy)
     planner = PlannerClient(args.planner_url).plan if args.condition.startswith("vlm") else None
 
     params = {
-        "stage": args.stage, "env_split": SPLITS[args.split], "planner": PLANNER_EXTERNAL,
+        "stage": args.stage, "env_split": SPLITS[args.split],
+        "planner": PLANNER_PROBE if probe else PLANNER_EXTERNAL,
+        "probe_subgoal": PROBE_SUBGOALS[args.probe_subgoal],
+        "hide_scenario": 1.0 if args.scenario == "hide" and not probe else 0.0,
         "eval_seed": args.eval_seed, "landing_radius": 0.02, "landing_speed": 0.3, "feed_time": 3.0,
         "time_penalty": 0.005, "prev_stage_mix": 0.0,
     }
@@ -126,8 +146,7 @@ def main() -> int:
         decisions_f.close()
         env.close()
 
-    fields = ["episode", "room", "stage", "condition", "latency", "success", "caught", "trapped",
-              "timeout", "sim_time", "collisions", "decisions", "reward"]
+    fields = ["condition", "latency", *EPISODE_FIELDS, *PROBE_FIELDS]
     with open(out / "episodes.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
