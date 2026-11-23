@@ -43,6 +43,12 @@ namespace MosquitoSim
         public int ProbeSubgoal;       // planner = Probe: -1 cycles through the stage's subgoals, 0-3 = Subgoal
         public bool HideScenario;      // planner = External: every episode is the HIDE scenario (11/22)
         public bool PathGuide;         // MOVE_TO / HIDE steer along an obstacle-free route (11/22, default on)
+        // Training-only reward experiments (11/24). Defaults reproduce the fixed rules; evaluation ignores them.
+        public bool FeedGate;          // no feeding (and no feeding reward) while the subgoal is not APPROACH
+        public float AchieveBonus;     // reward for achieving HIDE / MOVE_TO / EVADE
+        public float HideHold;         // HIDE: seconds to stay inside the radius
+        public float HideHoldReward;   // HIDE: reward per second while inside the radius
+        public float MoveToRadius;     // MOVE_TO: arrival radius
 
         public static EnvParams Read()
         {
@@ -62,7 +68,21 @@ namespace MosquitoSim
                 ProbeSubgoal = Mathf.RoundToInt(p.GetWithDefault("probe_subgoal", -1f)),
                 HideScenario = p.GetWithDefault("hide_scenario", 0f) > 0.5f,
                 PathGuide = p.GetWithDefault("path_guide", 1f) > 0.5f,
+                FeedGate = p.GetWithDefault("feed_gate", 0f) > 0.5f,
+                AchieveBonus = p.GetWithDefault("achieve_bonus", 0.3f),
+                HideHold = p.GetWithDefault("hide_hold", SubgoalConstants.HideHoldSeconds),
+                HideHoldReward = p.GetWithDefault("hide_hold_reward", 0f),
+                MoveToRadius = p.GetWithDefault("moveto_radius", SubgoalConstants.MoveToRadius),
             };
+            if (e.Split != EnvSplit.Train)
+            {
+                // Evaluation always judges by the fixed rules.
+                e.FeedGate = false;
+                e.AchieveBonus = 0.3f;
+                e.HideHold = SubgoalConstants.HideHoldSeconds;
+                e.HideHoldReward = 0f;
+                e.MoveToRadius = SubgoalConstants.MoveToRadius;
+            }
             // Auto test (Editor Play without Python): the only place test arguments override parameters.
             if (SimSettings.ManualPlay)
             {

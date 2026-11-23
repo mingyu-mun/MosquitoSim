@@ -115,6 +115,8 @@ namespace MosquitoSim
             RecordPreviousEpisode();
 
             m_P = EnvParams.Read();
+            m_Tracker.HideHoldSeconds = m_P.HideHold;
+            m_Tracker.MoveToRadius = m_P.MoveToRadius;
             m_EpisodeIndex++;
             m_Seed = m_P.IsTraining
                 ? unchecked(System.Environment.TickCount * 31 + m_Area.roomIndex * 7919 + m_EpisodeIndex)
@@ -264,6 +266,7 @@ namespace MosquitoSim
             m_Tracker.UpdateTarget(ResolveTarget(m_Tracker.Command, null));
             float progress = UpdateGuide(pos);
             if (!m_Motor.IsLanded) AddReward(k_ProgressCoef * progress);
+            if (m_P.HideHoldReward > 0f && m_Tracker.Holding) AddReward(m_P.HideHoldReward * dt);
             bool hazard = m_Stage >= 2 && hand.Active;
             SubgoalStatus status = m_Tracker.Step(m_SimTime, dt, pos, m_Motor.IsLanded, hazard);
             if (status != SubgoalStatus.Running && m_P.Planner == PlannerKind.Random)
@@ -281,7 +284,7 @@ namespace MosquitoSim
             }
             if (status == SubgoalStatus.Achieved)
             {
-                if (m_Tracker.Command.Subgoal != Subgoal.Approach) AddReward(k_AchieveBonus);
+                if (m_Tracker.Command.Subgoal != Subgoal.Approach) AddReward(m_P.AchieveBonus);
                 m_Events.Add("subgoal_achieved");
             }
             else if (status == SubgoalStatus.TimedOut)
@@ -293,7 +296,9 @@ namespace MosquitoSim
 
             // Feeding
             if (r.TookOff) m_FeedTimer = 0f;
-            if (m_Motor.IsLanded && m_Motor.LandedZone != null && !m_Motor.LandedZone.covered)
+            bool feedGated = m_P.FeedGate && m_Tracker.Command.Subgoal != Subgoal.Approach;
+            if (feedGated) m_FeedTimer = 0f;
+            else if (m_Motor.IsLanded && m_Motor.LandedZone != null && !m_Motor.LandedZone.covered)
             {
                 m_FeedTimer += dt;
                 if (m_FeedTimer >= m_P.FeedTime)
