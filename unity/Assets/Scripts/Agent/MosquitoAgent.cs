@@ -218,6 +218,9 @@ namespace MosquitoSim
                 m_Collisions++;
             }
             AddReward(-m_P.TimePenalty * dt);
+            // Experiment (11/24): hovering in front of the skin costs nothing otherwise; make not-yet-landed cost time.
+            if (m_P.ApproachTimePenalty > 0f && m_Tracker.Command.Subgoal == Subgoal.Approach && !m_Motor.IsLanded)
+                AddReward(-m_P.ApproachTimePenalty * dt);
 
             // Human and hand
             var human = m_Area.human;
