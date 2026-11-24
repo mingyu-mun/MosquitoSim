@@ -50,6 +50,8 @@ namespace MosquitoSim
         public float HideHoldReward;   // HIDE: reward per second while inside the radius
         public float MoveToRadius;     // MOVE_TO: arrival radius
         public float ApproachTimePenalty; // extra time penalty per second while APPROACH has not landed yet (11/24)
+        public bool SegmentEpisodes;   // training: one subgoal = one learning episode, the world carries on (11/24)
+        public float RuleMix;          // training: share of commands chosen by the oracle rule planner instead of at random
         public float Stage0PointMix;   // stage 0: share of commands that are MOVE_TO / HIDE to a free point (11/24)
 
         public static EnvParams Read()
@@ -76,6 +78,8 @@ namespace MosquitoSim
                 HideHoldReward = p.GetWithDefault("hide_hold_reward", 0f),
                 MoveToRadius = p.GetWithDefault("moveto_radius", SubgoalConstants.MoveToRadius),
                 Stage0PointMix = p.GetWithDefault("stage0_point_mix", 0f),
+                SegmentEpisodes = p.GetWithDefault("segment_episodes", 0f) > 0.5f,
+                RuleMix = p.GetWithDefault("rule_mix", 0f),
                 ApproachTimePenalty = p.GetWithDefault("approach_time_penalty", 0f),
             };
             if (e.Split != EnvSplit.Train)
@@ -87,6 +91,8 @@ namespace MosquitoSim
                 e.HideHoldReward = 0f;
                 e.MoveToRadius = SubgoalConstants.MoveToRadius;
                 e.Stage0PointMix = 0f;
+                e.SegmentEpisodes = false;
+                e.RuleMix = 0f;
                 e.ApproachTimePenalty = 0f;
             }
             // Auto test (Editor Play without Python): the only place test arguments override parameters.

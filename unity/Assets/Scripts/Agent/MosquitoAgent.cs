@@ -110,8 +110,26 @@ namespace MosquitoSim
                 MaxStep = Mathf.RoundToInt(episodeSeconds / Time.fixedDeltaTime);
         }
 
+        // Segment episodes (training experiment, 11/24): a subgoal that is achieved or times out ends the
+        // learning episode, but the room is not reset; the next subgoal starts where this one stopped.
+        // The room resets on feeding, capture, a trap, or after episodeSeconds.
+        bool m_Soft, m_SegOpen, m_Booting;
+        bool Seg => m_P.IsTraining && m_P.Planner == PlannerKind.Random && m_P.SegmentEpisodes;
+
+        void EndSegment(bool interrupted)
+        {
+            if (!Seg || !m_SegOpen) return;
+            m_SegOpen = false;
+            m_Soft = true;
+            if (interrupted) EpisodeInterrupted(); // the planner changed its mind: neither success nor failure
+            else EndEpisode();                     // achieved or timed out: terminal
+        }
+
         public override void OnEpisodeBegin()
         {
+            if (m_Soft) { m_Soft = false; return; } // learning-episode boundary only; the world carries on
+            m_SegOpen = false;
+            m_Booting = true;
             RecordPreviousEpisode();
 
             m_P = EnvParams.Read();
@@ -148,6 +166,7 @@ namespace MosquitoSim
             if (m_HideScenario) m_Events.Add("hide_scenario");
             m_LastDecisionTime = -999f;
             Decide(false);
+            m_Booting = false;
         }
 
         // ---------------------------------------------------------------- observations
@@ -171,7 +190,8 @@ namespace MosquitoSim
                 HandVelocity = dynamic ? hand.Velocity : Vector3.zero,
                 // Mosquito coil (stage 3, extension) is not implemented: hazard fields stay 0.
                 Subgoal = m_Tracker.Command.Subgoal,
-                RemainingTime01 = MaxStep > 0 ? 1f - (float)StepCount / MaxStep : 1f,
+                RemainingTime01 = Seg ? Mathf.Clamp01(1f - m_SimTime / episodeSeconds)
+                    : MaxStep > 0 ? 1f - (float)StepCount / MaxStep : 1f,
                 Landed = m_Motor.IsLanded,
             };
             ObsBuilder.Build(o, m_Rays, m_Obs);
@@ -186,6 +206,12 @@ namespace MosquitoSim
             var action = new Vector3(Mathf.Clamp(a[0], -1f, 1f), Mathf.Clamp(a[1], -1f, 1f), Mathf.Clamp(a[2], -1f, 1f));
             float dt = Time.fixedDeltaTime;
             m_SimTime += dt;
+            if (Seg && m_SimTime >= episodeSeconds)
+            {
+                m_SegOpen = false;
+                EpisodeInterrupted(); // the room's time is up: full reset
+                return;
+            }
 
             // Apply commands that arrived from Python since the last step.
             PollExternal();
@@ -296,6 +322,7 @@ namespace MosquitoSim
                     m_Excluded.Add(m_TargetSkin.id);
                 m_Events.Add("subgoal_timeout");
             }
+            if (status != SubgoalStatus.Running) EndSegment(false);
 
             // Feeding
             if (r.TookOff) m_FeedTimer = 0f;
@@ -358,7 +385,7 @@ namespace MosquitoSim
             }
 
             if (m_Events.Count == 0 && !midSwitch) return;
-            if (!midSwitch && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
+            if (!midSwitch && !Seg && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
 
             if (m_Stage >= 1 || m_P.Planner == PlannerKind.External || m_P.Stage0PointMix > 0f)
             {
@@ -378,7 +405,8 @@ namespace MosquitoSim
                     Apply(Planners.Rule(ctx), snapshot, ctx);
                     break;
                 case PlannerKind.Random:
-                    Apply(Planners.Random(ctx, m_Rng), snapshot, ctx);
+                    Apply(m_P.RuleMix > 0f && m_Stage >= 1 && m_Rng.NextDouble() < m_P.RuleMix
+                        ? Planners.Rule(ctx) : Planners.Random(ctx, m_Rng), snapshot, ctx);
                     break;
                 case PlannerKind.External:
                     SendRequest(ctx);
@@ -517,12 +545,14 @@ namespace MosquitoSim
 
         void SetCommand(PlannerCommand cmd, List<Candidate> snapshot)
         {
+            if (!m_Booting) EndSegment(true); // still running: the switch interrupts it
             if (cmd.Subgoal == Subgoal.Approach)
             {
                 var skin = m_Area.human.SkinById(cmd.Target);
                 if (skin != null) m_TargetSkin = skin;
             }
             m_Tracker.Set(cmd, ResolveTarget(cmd, snapshot), m_SimTime, transform.position);
+            m_SegOpen = true;
             m_Guide.Reset();
             if (Guided)
             {
