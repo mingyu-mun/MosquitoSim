@@ -19,6 +19,8 @@ namespace MosquitoSim
         public PlannerCommand Current;
         /// <summary>HIDE scenario before the choice: the human is about to look around.</summary>
         public bool HideSituation;
+        /// <summary>Stage 0 training experiment: share of commands that are MOVE_TO / HIDE to a free point.</summary>
+        public float Stage0PointMix;
         /// <summary>The alert counts for planning: stage 2+, or the HIDE scenario at any stage.</summary>
         public bool AlertKnown => (Stage >= 2 || HideSituation) && Human.Alert;
 
@@ -127,7 +129,14 @@ namespace MosquitoSim
         {
             var skins = c.Human.skins;
             if (c.Stage <= 0 || c.Candidates.Count == 0)
+            {
+                // Experiment (11/24): stage 0 already mixes point subgoals in the empty room, so the skin
+                // target and the subgoal target differ from the start and the subgoal has to be read.
+                if (c.Stage <= 0 && c.Candidates.Count > 0 && rng.NextDouble() < c.Stage0PointMix)
+                    return new PlannerCommand(rng.Next(2) == 0 ? Subgoal.MoveTo : Subgoal.Hide,
+                        c.Candidates[rng.Next(c.Candidates.Count)].Id);
                 return new PlannerCommand(Subgoal.Approach, skins[rng.Next(skins.Count)].id);
+            }
 
             if (c.Stage >= 2 && c.Hand.Active && rng.NextDouble() < 0.5)
                 return new PlannerCommand(Subgoal.Evade, null);

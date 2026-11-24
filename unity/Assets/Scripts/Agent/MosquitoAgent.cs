@@ -332,6 +332,7 @@ namespace MosquitoSim
                 ExcludedSkins = m_Excluded,
                 Current = m_Tracker.Command,
                 HideSituation = m_HideScenario && !m_Chosen,
+                Stage0PointMix = m_P.Stage0PointMix,
             };
         }
 
@@ -356,7 +357,7 @@ namespace MosquitoSim
             if (m_Events.Count == 0 && !midSwitch) return;
             if (!midSwitch && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
 
-            if (m_Stage >= 1 || m_P.Planner == PlannerKind.External)
+            if (m_Stage >= 1 || m_P.Planner == PlannerKind.External || m_P.Stage0PointMix > 0f)
             {
                 var rng = new System.Random(EpisodeSeed.Derive(m_Seed, m_DecisionIndex));
                 m_Area.Candidates.Select(rng, transform.position, m_Area.human, m_Area.net, m_Area.Cues);

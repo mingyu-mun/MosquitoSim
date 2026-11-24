@@ -49,6 +49,7 @@ namespace MosquitoSim
         public float HideHold;         // HIDE: seconds to stay inside the radius
         public float HideHoldReward;   // HIDE: reward per second while inside the radius
         public float MoveToRadius;     // MOVE_TO: arrival radius
+        public float Stage0PointMix;   // stage 0: share of commands that are MOVE_TO / HIDE to a free point (11/24)
 
         public static EnvParams Read()
         {
@@ -73,6 +74,7 @@ namespace MosquitoSim
                 HideHold = p.GetWithDefault("hide_hold", SubgoalConstants.HideHoldSeconds),
                 HideHoldReward = p.GetWithDefault("hide_hold_reward", 0f),
                 MoveToRadius = p.GetWithDefault("moveto_radius", SubgoalConstants.MoveToRadius),
+                Stage0PointMix = p.GetWithDefault("stage0_point_mix", 0f),
             };
             if (e.Split != EnvSplit.Train)
             {
@@ -82,6 +84,7 @@ namespace MosquitoSim
                 e.HideHold = SubgoalConstants.HideHoldSeconds;
                 e.HideHoldReward = 0f;
                 e.MoveToRadius = SubgoalConstants.MoveToRadius;
+                e.Stage0PointMix = 0f;
             }
             // Auto test (Editor Play without Python): the only place test arguments override parameters.
             if (SimSettings.ManualPlay)
