@@ -35,6 +35,9 @@ namespace MosquitoSim
 
         public void UpdateTarget(Vector3 target) => Target = target;
 
+        /// <summary>HIDE: inside the hiding radius and counting the hold.</summary>
+        public bool Holding => !Ended && Command.Subgoal == Subgoal.Hide && m_Hold > 0f;
+
         /// <summary>Distance change toward (EVADE: away from) the target since the last call.</summary>
         public float Shaping(Vector3 pos) => Shaping(Vector3.Distance(pos, Target));
 
@@ -60,6 +63,7 @@ namespace MosquitoSim
                 case Subgoal.Hide:
                     m_Hold = d <= SubgoalConstants.HideRadius ? m_Hold + dt : 0f;
                     if (m_Hold >= SubgoalConstants.HideHoldSeconds) return End(SubgoalStatus.Achieved);
+                    if (m_Hold > 0f) return SubgoalStatus.Running; // the 8 s limit is for getting there, not the hold
                     break;
                 case Subgoal.MoveTo:
                     if (d <= SubgoalConstants.MoveToRadius) return End(SubgoalStatus.Achieved);

@@ -33,7 +33,7 @@ namespace MosquitoSim
     {
         public const float TimeoutSeconds = 8f;
         public const float HideRadius = 0.15f;
-        public const float HideHoldSeconds = 1f;
+        public const float HideHoldSeconds = 5f; // 11/22: same 5 s as the HIDE evaluation's alert
         public const float MoveToRadius = 0.15f;
         public const float EvadeDistance = 1.5f;
     }

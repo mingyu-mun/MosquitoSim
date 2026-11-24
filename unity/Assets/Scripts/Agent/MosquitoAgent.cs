@@ -336,8 +336,10 @@ namespace MosquitoSim
             bool feeding = m_Motor.IsLanded && m_Tracker.Command.Subgoal == Subgoal.Approach;
             bool random = m_P.Planner == PlannerKind.Random;
 
-            // Training: random mid-switch, about once per 5 s, never while feeding.
-            bool midSwitch = random && decisionStep && !feeding && m_Stage >= 1 && m_Rng.NextDouble() < k_MidSwitchProb;
+            // Training: random mid-switch, about once per 5 s, never while feeding or holding a hiding spot
+            // (the 5 s hold would rarely finish otherwise). Events can still switch.
+            bool midSwitch = random && decisionStep && !feeding && !m_Tracker.Holding && m_Stage >= 1 &&
+                             m_Rng.NextDouble() < k_MidSwitchProb;
 
             if (random && feeding)
             {
