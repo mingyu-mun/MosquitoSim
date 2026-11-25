@@ -275,6 +275,16 @@ namespace MosquitoSim
             foreach (var kv in MosquitoAgent.ProbeOutcomes)
                 Diagnose("점검 결과", $"{kv.Key} {kv.Value.x:0}회, 평균 {kv.Value.y / Mathf.Max(1f, kv.Value.x):0.00}초");
             foreach (var line in MosquitoAgent.HideTrace) Diagnose("HIDE", line);
+            if (MosquitoAgent.RouteEpisodes > 0)
+            {
+                int ne = MosquitoAgent.NetEntered;
+                Diagnose("길찾기 지표", $"에피소드 {MosquitoAgent.RouteEpisodes}, 첫 결정 때 경로 있음 {MosquitoAgent.RouteFound} (바로 보임 {MosquitoAgent.RouteDirect}), " +
+                    $"MOVE_TO {MosquitoAgent.MoveToCmds} (직선 불가 {MosquitoAgent.MoveToBlocked}), APPROACH {MosquitoAgent.ApproachCmds} (직선 불가 {MosquitoAgent.ApproachBlocked}), " +
+                    $"모기장 진입 {ne}/{MosquitoAgent.NetEpisodes}" + (ne > 0 ? $", 평균 {MosquitoAgent.NetEnterSeconds / ne:0.0}초" : ""));
+            }
+            if (MosquitoAgent.RuleCommands + MosquitoAgent.RandomCommands > 0)
+                Diagnose("학습 구조", $"서브골 끝으로 끊긴 학습 에피소드 {MosquitoAgent.SegEnds}회, 지시 교체로 중단 {MosquitoAgent.SegInterrupts}회, " +
+                                    $"방 초기화 {MosquitoAgent.Episodes}회, 지시: 정답 규칙 {MosquitoAgent.RuleCommands}회 / 무작위 {MosquitoAgent.RandomCommands}회");
             if (RoomArea.NetLayouts > 0)
                 Diagnose("모기장", $"배치 {RoomArea.NetLayouts}회, 열린 면을 바꾼 시도 {RoomArea.NetSideSwaps}회, " +
                                 $"어느 면도 길이 안 열린 배치 {RoomArea.NetRouteFailures}회, 모기장이 들어갈 자리를 못 찾은 배치 {RoomArea.NetFitFailures}회");

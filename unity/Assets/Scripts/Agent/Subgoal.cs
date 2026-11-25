@@ -27,6 +27,7 @@ namespace MosquitoSim
         Rule = 2,     // in Unity, for quick checks
         External = 3, // evaluation
         Probe = 4,    // direct subgoal check: one subgoal per episode, no replanning (11/22)
+        MaskedRule = 5, // auto tests only: C# copy of the Python masked rule (11/25)
     }
 
     public static class SubgoalConstants

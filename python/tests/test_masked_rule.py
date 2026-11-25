@@ -94,3 +94,13 @@ def test_unity_view_has_exactly_these_keys():
     assert keys == VIEW_KEYS | SKIN_KEYS | POINT_KEYS
     for bad in ("hidden", "clear_path", "covered", "near_trap", "excluded", "pos", "remaining"):
         assert bad not in keys
+
+
+def test_skips_skins_whose_approach_failed():
+    v = view()
+    v["skins"] = [{"id": "S1", "name": "a", "dist": 0.5, "failed": True},
+                  {"id": "S2", "name": "b", "dist": 0.9, "failed": False}]
+    assert masked_rule(v) == {"subgoal": "APPROACH", "target": "S2"}
+    for s in v["skins"]:
+        s["failed"] = True
+    assert masked_rule(v) == {"subgoal": "APPROACH", "target": "S1"}

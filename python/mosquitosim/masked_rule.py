@@ -23,7 +23,7 @@ VIEW_KEYS = frozenset({
     "stage", "situation", "sim_time", "episode_seconds", "human_walking", "alert", "hand_active", "hand_dist",
     "hand_closing", "landed", "feed_progress", "feed_time", "skins", "candidates", "current_command",
 })
-SKIN_KEYS = frozenset({"id", "name", "dist"})
+SKIN_KEYS = frozenset({"id", "name", "dist", "failed"})
 POINT_KEYS = frozenset({"id", "dist", "head_dist", "height"})
 
 
@@ -35,7 +35,7 @@ def masked_rule(view: Mapping) -> Dict[str, str]:
        HIDE at the candidate farthest from the human's
        head (ties: nearer to the mosquito). Without knowing which points are
        hidden, distance from the eyes is the best available guess.
-    3. Otherwise APPROACH the nearest skin.
+    3. Otherwise APPROACH the nearest skin that has not failed this episode (all failed: the nearest).
 
     MOVE_TO is never chosen: deciding that the way to a skin is blocked needs
     scene geometry, which the view does not have.
@@ -50,5 +50,8 @@ def masked_rule(view: Mapping) -> Dict[str, str]:
         far = max(candidates, key=lambda c: (c["head_dist"], -c["dist"]))
         return {"subgoal": "HIDE", "target": far["id"]}
 
-    near = min(view["skins"], key=lambda s: s["dist"])
+    # Skip skins whose APPROACH already timed out this episode (the fixed and oracle planners do the same);
+    # when every skin has failed, start over with all of them.
+    skins = [s for s in view["skins"] if not s.get("failed")] or view["skins"]
+    near = min(skins, key=lambda s: s["dist"])
     return {"subgoal": "APPROACH", "target": near["id"]}

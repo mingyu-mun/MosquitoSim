@@ -16,7 +16,7 @@ namespace MosquitoSim
     /// </summary>
     public class PlannerView
     {
-        public struct Skin { public string Id, Name; public float Dist; }
+        public struct Skin { public string Id, Name; public float Dist; public bool Failed; } // Failed: APPROACH timed out on it this episode (11/25)
         public struct Point { public string Id; public float Dist, HeadDist, Height; } // from the mosquito, from the human's head, above the floor
 
         public int Stage;
@@ -50,7 +50,8 @@ namespace MosquitoSim
                 .Key("feed_time").Value(FeedTime);
             j.Key("skins").BeginArray();
             foreach (var s in Skins)
-                j.BeginObject().Key("id").Value(s.Id).Key("name").Value(s.Name).Key("dist").Value(s.Dist).EndObject();
+                j.BeginObject().Key("id").Value(s.Id).Key("name").Value(s.Name).Key("dist").Value(s.Dist)
+                    .Key("failed").Value(s.Failed).EndObject();
             j.EndArray();
             j.Key("candidates").BeginArray();
             foreach (var p in Candidates)
@@ -91,7 +92,12 @@ namespace MosquitoSim
                 v.HandClosing = v.HandDist > 1e-4f ? Vector3.Dot(c.Hand.Velocity, toMosq / v.HandDist) : 0f;
             }
             foreach (var s in h.skins)
-                v.Skins.Add(new PlannerView.Skin { Id = s.id, Name = s.zoneName, Dist = Vector3.Distance(s.Center, c.MosquitoPos) });
+                v.Skins.Add(new PlannerView.Skin
+                {
+                    Id = s.id, Name = s.zoneName, Dist = Vector3.Distance(s.Center, c.MosquitoPos),
+                    // The same failure memory the fixed and oracle planners use (ExcludedSkins), 11/25.
+                    Failed = c.ExcludedSkins != null && c.ExcludedSkins.Contains(s.id),
+                });
             float floorY = h.transform.position.y;
             foreach (var k in c.Candidates)
                 v.Candidates.Add(new PlannerView.Point
@@ -137,6 +143,7 @@ namespace MosquitoSim
             {
                 if (i > 0) sb.Append(", ");
                 sb.Append(v.Skins[i].Id).Append(' ').Append(v.Skins[i].Name).Append(' ').Append(F(v.Skins[i].Dist)).Append('m');
+                if (v.Skins[i].Failed) sb.Append("(착지 실패)");
             }
             sb.Append('\n');
 

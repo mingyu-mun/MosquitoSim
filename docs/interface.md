@@ -207,7 +207,7 @@ HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅�
 | Python → Unity | command | room, episode, decision, command. 다른 에피소드의 지시는 무시 |
 | Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command |
 | Unity → Python | decision | request와 같은 필드 + command (Unity 안 플래너의 로그) |
-| Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait·probe_travel·probe_arrived |
+| Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 길찾기 지표(route_hops·moveto_commands·moveto_blocked·approach_commands·approach_blocked·net·net_enter_time), 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait·probe_travel·probe_arrived |
 
 에피소드 ID는 `<분할>/s<평가 시드>/r<방>e<방의 에피소드 번호>`입니다.
 
@@ -225,3 +225,20 @@ VLM 호출은 Python 평가 루프(`evaluate.py`)가 맡습니다. Unity는 사�
 ## 로그
 
 결정 로그 한 줄: 시각, 에피소드 ID, 입력(이미지 파일 경로, 지시문), 후보 목록과 기하 정답, 원문 응답, 서브골과 대상 ID, 유효 여부, 지연, 같은 상황의 정답 규칙·마스킹 규칙 지시(`rule_command`, `rule_masked_command`). 기하 정답으로 "HIDE로 고른 지점이 실제로 가려진 비율", "MOVE_TO로 고른 지점에서 사람까지 길이 열린 비율"을 계산합니다. 이 로그가 지연 실험의 재생 데이터입니다.
+
+## 길찾기 지표 (11/25)
+
+플래너가 막힌 길을 돌아가는지 따로 봅니다. `episode_end`에 아래 값이 붙고, `python -m evaluation.metrics <폴더> --route`로 조건별 요약을 냅니다.
+
+| 필드 | 뜻 |
+|---|---|
+| `route_hops` | 첫 결정 때 모기에서 '피부가 직선으로 보이는 지점'까지 후보 지점을 거치는 최단 경로의 지점 수. 0이면 바로 보임, -1이면 경로 없음 |
+| `moveto_commands` / `moveto_blocked` | MOVE_TO 지시 수와, 지시한 순간 그 지점이 직선 비행으로 가지 못하는 곳이었던 수 |
+| `approach_commands` / `approach_blocked` | APPROACH 지시 수와, 지시한 순간 피부가 직선으로 막혀 있던 수 |
+| `net` / `net_enter_time` | 모기장 방인지, 모기장 안에 처음 들어간 시각(초, 못 들어가면 -1) |
+
+요약 열: `route_found`(경로가 있던 비율), `success_if_route`(그중 흡혈 성공), `moveto_blocked`·`approach_blocked`(막힌 지시 비율), `net_entered`·`net_enter_s`(모기장 방에서 들어간 비율과 걸린 시간 중앙값), `efficiency`(돌아가야 했던 성공 에피소드에서 최단 지점 수 ÷ 실제 MOVE_TO 수, 1이 최단).
+
+자동 테스트 리포트의 `[길찾기 지표]` 줄도 같은 값을 합산합니다. 에디터에서 Python 없이 마스킹 규칙을 비교할 수 있도록 `planner=5`(MaskedRule, `masked_rule.py`의 C# 사본)를 두었습니다. 본 평가는 Python의 `rule_masked`를 씁니다.
+
+플래너 입력의 피부 목록에는 `failed`가 붙습니다. 이번 에피소드에 APPROACH가 시간 안에 닿지 못해 제외된 피부이고, 글 설명에는 "(착지 실패)"로 나옵니다. 마스킹 규칙은 이 피부를 건너뜁니다.

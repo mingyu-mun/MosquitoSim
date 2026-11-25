@@ -1,0 +1,90 @@
+# Stage 0 with point subgoals mixed in (experiment, 11/24). Based on configs/stage0.yaml.
+# Stage 0: empty room, standing human, APPROACH only (a random skin each episode).
+# mlagents-learn configs/stage0.yaml --run-id stage0_s<seed> --seed <seed> --env <build> \
+#   --no-graphics --time-scale 20 --num-envs 4
+# Or use scripts/run_stage.sh.
+behaviors:
+  Mosquito:
+    trainer_type: ppo
+    hyperparameters:
+      batch_size: 2048
+      buffer_size: 20480
+      learning_rate: 3.0e-4
+      beta: 5.0e-3
+      epsilon: 0.2
+      lambd: 0.95
+      num_epoch: 3
+      learning_rate_schedule: linear
+    network_settings:
+      normalize: false        # observations are already scaled to [-1, 1]
+      hidden_units: 256
+      num_layers: 2
+    reward_signals:
+      extrinsic:
+        gamma: 0.99
+        strength: 1.0
+    max_steps: 5000000
+    time_horizon: 128
+    summary_freq: 20000
+    checkpoint_interval: 250000
+    keep_checkpoints: 20
+
+environment_parameters:
+  stage: 0.0
+  env_split: 0.0            # train (SplitConfig.cs EnvSplit)
+  planner: 1.0              # random training planner; stage 0 = APPROACH a random skin (Subgoal.cs PlannerKind)
+  time_penalty: 0.005       # per simulated second
+
+  # Landing is narrowed by curriculum: 6 cm / 0.6 m/s / 1 s feeding at the
+  # start, 2 cm / 0.3 m/s / 3 s at the end. Reward per episode is about
+  # +1 on success plus small shaping, so 0.8 means most episodes succeed.
+  landing_radius:
+    curriculum:
+      - name: wide
+        completion_criteria: {measure: reward, behavior: Mosquito, signal_smoothing: true, min_lesson_length: 200, threshold: 0.8}
+        value: 0.06
+      - name: medium
+        completion_criteria: {measure: reward, behavior: Mosquito, signal_smoothing: true, min_lesson_length: 200, threshold: 0.8}
+        value: 0.04
+      - name: final
+        value: 0.02
+  landing_speed:
+    curriculum:
+      - name: wide
+        completion_criteria: {measure: reward, behavior: Mosquito, signal_smoothing: true, min_lesson_length: 200, threshold: 0.8}
+        value: 0.6
+      - name: medium
+        completion_criteria: {measure: reward, behavior: Mosquito, signal_smoothing: true, min_lesson_length: 200, threshold: 0.8}
+        value: 0.45
+      - name: final
+        value: 0.3
+  feed_time:
+    curriculum:
+      - name: wide
+        completion_criteria: {measure: reward, behavior: Mosquito, signal_smoothing: true, min_lesson_length: 200, threshold: 0.8}
+        value: 1.0
+      - name: medium
+        completion_criteria: {measure: reward, behavior: Mosquito, signal_smoothing: true, min_lesson_length: 200, threshold: 0.8}
+        value: 2.0
+      - name: final
+        value: 3.0
+  # --- experiment (11/24): point subgoals from stage 0 ---
+  stage0_point_mix: 0.5     # half of the commands are MOVE_TO / HIDE to a free point of the empty room
+  feed_gate: 1.0            # no feeding while the subgoal is not APPROACH
+  hide_hold_reward: 0.1     # per second inside the hiding radius
+  hide_hold:
+    curriculum:
+      - name: l0
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.1}
+        value: 0.5
+      - name: l1
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.2}
+        value: 1.0
+      - name: l2
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.3}
+        value: 2.0
+      - name: l3
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.4}
+        value: 3.5
+      - name: l4
+        value: 5.0

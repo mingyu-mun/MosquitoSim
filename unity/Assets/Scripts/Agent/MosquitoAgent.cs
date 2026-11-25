@@ -92,6 +92,16 @@ namespace MosquitoSim
         public static int Episodes, Successes, Caught, Trapped, Decisions;
         /// <summary>Auto-test report: guided steps, and those without a route (fell back to straight line).</summary>
         public static int GuidedSteps, UnroutedSteps;
+        /// <summary>Auto-test report (training mode): learning episodes ended at a subgoal end / by a switch,
+        /// and commands from the oracle rule vs at random.</summary>
+        public static int SegEnds, SegInterrupts, RuleCommands, RandomCommands;
+        /// <summary>Auto-test report: route benchmark totals over finished episodes (11/25).</summary>
+        public static int RouteEpisodes, RouteFound, RouteDirect, NetEpisodes, NetEntered,
+            MoveToCmds, MoveToBlocked, ApproachCmds, ApproachBlocked;
+        public static float NetEnterSeconds;
+        // Route benchmark per episode (11/25)
+        int m_RouteHops = -2, m_MoveTos, m_MoveToBlocked, m_Approaches, m_ApproachBlocked;
+        float m_NetEnterTime = -1f;
         /// <summary>Direct subgoal checks per subgoal wire name: trials, achieved, seconds to achieve.</summary>
         public static readonly Dictionary<string, Vector3> ProbeStats = new Dictionary<string, Vector3>();
         /// <summary>Auto-test report: "SUBGOAL/outcome" -> (count, summed seconds).</summary>
@@ -101,7 +111,9 @@ namespace MosquitoSim
         float m_SearchAngle;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = GuidedSteps = UnroutedSteps = 0; ProbeStats.Clear(); ProbeOutcomes.Clear(); HideTrace.Clear(); }
+        static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = GuidedSteps = UnroutedSteps = SegEnds = SegInterrupts = RuleCommands = RandomCommands = 0;
+            RouteEpisodes = RouteFound = RouteDirect = NetEpisodes = NetEntered = MoveToCmds = MoveToBlocked = ApproachCmds = ApproachBlocked = 0;
+            NetEnterSeconds = 0f; ProbeStats.Clear(); ProbeOutcomes.Clear(); HideTrace.Clear(); }
 
         public override void Initialize()
         {
@@ -111,11 +123,31 @@ namespace MosquitoSim
                 MaxStep = Mathf.RoundToInt(episodeSeconds / Time.fixedDeltaTime);
         }
 
+        // Segment episodes (training experiment, 11/24): a subgoal that is achieved or times out ends the
+        // learning episode, but the room is not reset; the next subgoal starts where this one stopped.
+        // The room resets on feeding, capture, a trap, or after episodeSeconds.
+        bool m_Soft, m_SegOpen, m_Booting;
+        bool Seg => m_P.IsTraining && m_P.Planner == PlannerKind.Random && m_P.SegmentEpisodes;
+
+        void EndSegment(bool interrupted)
+        {
+            if (!Seg || !m_SegOpen) return;
+            m_SegOpen = false;
+            m_Soft = true;
+            if (interrupted) { SegInterrupts++; EpisodeInterrupted(); } // the planner changed its mind
+            else { SegEnds++; EndEpisode(); }                         // achieved or timed out: terminal
+        }
+
         public override void OnEpisodeBegin()
         {
+            if (m_Soft) { m_Soft = false; return; } // learning-episode boundary only; the world carries on
+            m_SegOpen = false;
+            m_Booting = true;
             RecordPreviousEpisode();
 
             m_P = EnvParams.Read();
+            m_Tracker.HideHoldSeconds = m_P.HideHold;
+            m_Tracker.MoveToRadius = m_P.MoveToRadius;
             m_EpisodeIndex++;
             m_Seed = m_P.IsTraining
                 ? unchecked(System.Environment.TickCount * 31 + m_Area.roomIndex * 7919 + m_EpisodeIndex)
@@ -135,6 +167,9 @@ namespace MosquitoSim
             m_DecisionIndex = 0;
             m_Succeeded = m_Caught = m_Trapped = false;
             m_Collisions = 0;
+            m_RouteHops = -2;
+            m_MoveTos = m_MoveToBlocked = m_Approaches = m_ApproachBlocked = 0;
+            m_NetEnterTime = -1f;
             m_PrevAlert = m_PrevHandActive = false;
             m_Excluded.Clear();
             m_Snapshots.Clear();
@@ -147,6 +182,7 @@ namespace MosquitoSim
             if (m_HideScenario) m_Events.Add("hide_scenario");
             m_LastDecisionTime = -999f;
             Decide(false);
+            m_Booting = false;
         }
 
         // ---------------------------------------------------------------- observations
@@ -170,7 +206,8 @@ namespace MosquitoSim
                 HandVelocity = dynamic ? hand.Velocity : Vector3.zero,
                 // Mosquito coil (stage 3, extension) is not implemented: hazard fields stay 0.
                 Subgoal = m_Tracker.Command.Subgoal,
-                RemainingTime01 = MaxStep > 0 ? 1f - (float)StepCount / MaxStep : 1f,
+                RemainingTime01 = Seg ? Mathf.Clamp01(1f - m_SimTime / episodeSeconds)
+                    : MaxStep > 0 ? 1f - (float)StepCount / MaxStep : 1f,
                 Landed = m_Motor.IsLanded,
             };
             ObsBuilder.Build(o, m_Rays, m_Obs);
@@ -185,6 +222,12 @@ namespace MosquitoSim
             var action = new Vector3(Mathf.Clamp(a[0], -1f, 1f), Mathf.Clamp(a[1], -1f, 1f), Mathf.Clamp(a[2], -1f, 1f));
             float dt = Time.fixedDeltaTime;
             m_SimTime += dt;
+            if (Seg && m_SimTime >= episodeSeconds)
+            {
+                m_SegOpen = false;
+                EpisodeInterrupted(); // the room's time is up: full reset
+                return;
+            }
 
             // Apply commands that arrived from Python since the last step.
             PollExternal();
@@ -203,6 +246,8 @@ namespace MosquitoSim
             bool hold = m_HideScenario && !m_ProbeValid;
             MotorStepResult r = hold ? default(MotorStepResult) : m_Motor.Step(action, dt, landing, m_P.LandingRadius, m_P.LandingSpeed);
             Vector3 pos = transform.position;
+            if (m_NetEnterTime < 0f && m_Area.net != null && m_Area.net.Enabled && m_Area.net.Contains(pos))
+                m_NetEnterTime = m_SimTime;
 
             if (r.HitTrap)
             {
@@ -217,6 +262,9 @@ namespace MosquitoSim
                 m_Collisions++;
             }
             AddReward(-m_P.TimePenalty * dt);
+            // Experiment (11/24): hovering in front of the skin costs nothing otherwise; make not-yet-landed cost time.
+            if (m_P.ApproachTimePenalty > 0f && m_Tracker.Command.Subgoal == Subgoal.Approach && !m_Motor.IsLanded)
+                AddReward(-m_P.ApproachTimePenalty * dt);
 
             // Human and hand
             var human = m_Area.human;
@@ -265,6 +313,7 @@ namespace MosquitoSim
             m_Tracker.UpdateTarget(ResolveTarget(m_Tracker.Command, null));
             float progress = UpdateGuide(pos);
             if (!m_Motor.IsLanded) AddReward(k_ProgressCoef * progress);
+            if (m_P.HideHoldReward > 0f && m_Tracker.Holding) AddReward(m_P.HideHoldReward * dt);
             bool hazard = m_Stage >= 2 && hand.Active;
             SubgoalStatus status = m_Tracker.Step(m_SimTime, dt, pos, m_Motor.IsLanded, hazard);
             if (status != SubgoalStatus.Running && m_P.Planner == PlannerKind.Random)
@@ -282,7 +331,7 @@ namespace MosquitoSim
             }
             if (status == SubgoalStatus.Achieved)
             {
-                if (m_Tracker.Command.Subgoal != Subgoal.Approach) AddReward(k_AchieveBonus);
+                if (m_Tracker.Command.Subgoal != Subgoal.Approach) AddReward(m_P.AchieveBonus);
                 m_Events.Add("subgoal_achieved");
             }
             else if (status == SubgoalStatus.TimedOut)
@@ -291,10 +340,13 @@ namespace MosquitoSim
                     m_Excluded.Add(m_TargetSkin.id);
                 m_Events.Add("subgoal_timeout");
             }
+            if (status != SubgoalStatus.Running) EndSegment(false);
 
             // Feeding
             if (r.TookOff) m_FeedTimer = 0f;
-            if (m_Motor.IsLanded && m_Motor.LandedZone != null && !m_Motor.LandedZone.covered)
+            bool feedGated = m_P.FeedGate && m_Tracker.Command.Subgoal != Subgoal.Approach;
+            if (feedGated) m_FeedTimer = 0f;
+            else if (m_Motor.IsLanded && m_Motor.LandedZone != null && !m_Motor.LandedZone.covered)
             {
                 m_FeedTimer += dt;
                 if (m_FeedTimer >= m_P.FeedTime)
@@ -328,6 +380,7 @@ namespace MosquitoSim
                 ExcludedSkins = m_Excluded,
                 Current = m_Tracker.Command,
                 HideSituation = m_HideScenario && !m_Chosen,
+                Stage0PointMix = m_P.Stage0PointMix,
             };
         }
 
@@ -350,9 +403,9 @@ namespace MosquitoSim
             }
 
             if (m_Events.Count == 0 && !midSwitch) return;
-            if (!midSwitch && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
+            if (!midSwitch && !Seg && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
 
-            if (m_Stage >= 1 || m_P.Planner == PlannerKind.External)
+            if (m_Stage >= 1 || m_P.Planner == PlannerKind.External || m_P.Stage0PointMix > 0f)
             {
                 var rng = new System.Random(EpisodeSeed.Derive(m_Seed, m_DecisionIndex));
                 m_Area.Candidates.Select(rng, transform.position, m_Area.human, m_Area.net, m_Area.Cues);
@@ -360,17 +413,25 @@ namespace MosquitoSim
             var snapshot = new List<Candidate>(m_Area.Candidates.Current);
             m_Snapshots[m_DecisionIndex] = snapshot;
             PlannerContext ctx = Context();
+            if (m_RouteHops == -2) m_RouteHops = Planners.RouteHops(ctx); // route at the first decision
 
             switch (m_P.Planner)
             {
                 case PlannerKind.Fixed:
                     Apply(Planners.Fixed(ctx), snapshot, ctx);
                     break;
+                case PlannerKind.MaskedRule:
+                    Apply(Planners.MaskedRule(StateDescriber.View(ctx, episodeSeconds)), snapshot, ctx);
+                    break;
                 case PlannerKind.Rule:
                     Apply(Planners.Rule(ctx), snapshot, ctx);
                     break;
                 case PlannerKind.Random:
-                    Apply(Planners.Random(ctx, m_Rng), snapshot, ctx);
+                {
+                    bool rule = m_P.RuleMix > 0f && m_Stage >= 1 && m_Rng.NextDouble() < m_P.RuleMix;
+                    if (rule) RuleCommands++; else RandomCommands++;
+                    Apply(rule ? Planners.Rule(ctx) : Planners.Random(ctx, m_Rng), snapshot, ctx);
+                }
                     break;
                 case PlannerKind.External:
                     SendRequest(ctx);
@@ -510,12 +571,28 @@ namespace MosquitoSim
 
         void SetCommand(PlannerCommand cmd, List<Candidate> snapshot)
         {
+            if (!m_Booting) EndSegment(true); // still running: the switch interrupts it
+            // Route benchmark: was the command a straight flight from here when it was given?
+            if (cmd.Subgoal == Subgoal.MoveTo)
+            {
+                m_MoveTos++;
+                bool reach = false;
+                if (snapshot != null) foreach (var k in snapshot) if (k.Id == cmd.Target) reach = k.Reachable;
+                if (!reach) m_MoveToBlocked++;
+            }
+            else if (cmd.Subgoal == Subgoal.Approach)
+            {
+                m_Approaches++;
+                var sk = m_Area.human.SkinById(cmd.Target);
+                if (sk != null && !CandidatePoints.CanReachSkin(transform.position, sk)) m_ApproachBlocked++;
+            }
             if (cmd.Subgoal == Subgoal.Approach)
             {
                 var skin = m_Area.human.SkinById(cmd.Target);
                 if (skin != null) m_TargetSkin = skin;
             }
             m_Tracker.Set(cmd, ResolveTarget(cmd, snapshot), m_SimTime, transform.position);
+            m_SegOpen = true;
             m_Guide.Reset();
             if (Guided)
             {
@@ -553,6 +630,13 @@ namespace MosquitoSim
             if (m_Caught) Caught++;
             if (m_Trapped) Trapped++;
             Decisions += m_DecisionIndex;
+            RouteEpisodes++;
+            if (m_RouteHops >= 0) RouteFound++;
+            if (m_RouteHops == 0) RouteDirect++;
+            MoveToCmds += m_MoveTos; MoveToBlocked += m_MoveToBlocked;
+            ApproachCmds += m_Approaches; ApproachBlocked += m_ApproachBlocked;
+            bool netRoom = m_Area.net != null && m_Area.net.Enabled;
+            if (netRoom) { NetEpisodes++; if (m_NetEnterTime >= 0f) { NetEntered++; NetEnterSeconds += m_NetEnterTime; } }
             var stats = Academy.Instance.StatsRecorder;
             stats.Add("Mosquito/Success", m_Succeeded ? 1f : 0f);
             stats.Add("Mosquito/Caught", m_Caught ? 1f : 0f);
@@ -577,7 +661,16 @@ namespace MosquitoSim
                     .Key("decisions").Value(m_DecisionIndex)
                     .Key("reward").Value(GetCumulativeReward())
                     .Key("room_type").Value(m_Area.Generator.Current.ToString())
-                    .Key("layout").Value(m_Area.Obstacles.Layout);
+                    .Key("layout").Value(m_Area.Obstacles.Layout)
+                    // Route benchmark (11/25): shortest route at the first decision (-1 none, 0 direct),
+                    // commands that were not a straight flight when given, net entry.
+                    .Key("route_hops").Value(m_RouteHops)
+                    .Key("moveto_commands").Value(m_MoveTos)
+                    .Key("moveto_blocked").Value(m_MoveToBlocked)
+                    .Key("approach_commands").Value(m_Approaches)
+                    .Key("approach_blocked").Value(m_ApproachBlocked)
+                    .Key("net").Value(m_Area.net != null && m_Area.net.Enabled)
+                    .Key("net_enter_time").Value(m_NetEnterTime);
                 if (m_Probe || m_HideScenario)
                 {
                     j.Key("probe_subgoal").Value(PlannerCommand.WireName(m_ProbeSubgoal))

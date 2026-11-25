@@ -204,3 +204,31 @@ def test_hide_execution_check_needs_arrival_but_planner_scenario_does_not(tmp_pa
     assert scenario["achieved_if_arrived"] == pytest.approx(6 / 7)
     verdict = {o["kind"]: o["passed"] for o in overall}
     assert verdict["probe"] is False and verdict["hide-vlm"] is None
+
+
+def test_route_summary(tmp_path):
+    d = tmp_path / "vlm__eval_net__p1s1__measured"
+    d.mkdir()
+    cols = ["episode", "success", "caught", "trapped", "timeout", "sim_time", "room_type", "route_hops",
+            "moveto_commands", "moveto_blocked", "approach_commands", "approach_blocked", "net", "net_enter_time"]
+    eps = [  # success, hops, moveto, moveto_blocked, approach, approach_blocked, enter time
+        (True, 2, 2, 0, 1, 0, 3.0),
+        (True, 1, 2, 1, 1, 0, 5.0),
+        (False, 1, 3, 3, 2, 2, -1.0),
+        (False, -1, 0, 0, 1, 1, -1.0),
+    ]
+    with open(d / "episodes.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for i, (ok, hops, mt, mtb, ap, apb, t) in enumerate(eps):
+            w.writerow({"episode": i, "success": str(ok), "caught": "False", "trapped": "False", "timeout": str(not ok),
+                        "sim_time": 10.0, "room_type": "R5x4", "route_hops": hops, "moveto_commands": mt,
+                        "moveto_blocked": mtb, "approach_commands": ap, "approach_blocked": apb, "net": "True",
+                        "net_enter_time": t})
+    (r,) = metrics.route_summary(metrics.load_runs(tmp_path))
+    assert r["route_found"] == pytest.approx(0.75)
+    assert r["success_if_route"] == pytest.approx(2 / 3)
+    assert r["moveto_blocked"] == pytest.approx(4 / 7)
+    assert r["approach_blocked"] == pytest.approx(3 / 5)
+    assert r["net_entered"] == pytest.approx(0.5) and r["net_enter_s"] == pytest.approx(4.0)
+    assert r["efficiency"] == pytest.approx((1.0 + 0.5) / 2)

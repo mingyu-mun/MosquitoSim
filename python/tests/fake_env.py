@@ -43,7 +43,7 @@ class FakeEnv:
                 "stage": 2, "situation": "", "sim_time": self.t, "episode_seconds": 60.0, "human_walking": True,
                 "alert": "alert_start" in events, "hand_active": False, "hand_dist": 0.0, "hand_closing": 0.0,
                 "landed": False, "feed_progress": 0.0, "feed_time": 3.0,
-                "skins": [{"id": f"S{i}", "name": "x", "dist": 1.0 + i} for i in range(1, 6)],
+                "skins": [{"id": f"S{i}", "name": "x", "dist": 1.0 + i, "failed": False} for i in range(1, 6)],
                 "candidates": [{"id": f"P{i}", "dist": 0.5 * i, "head_dist": 3.0 - 0.3 * i, "height": 1.0}
                                for i in range(1, 9)],
                 "current_command": {"subgoal": "APPROACH", "target": "S1"},
