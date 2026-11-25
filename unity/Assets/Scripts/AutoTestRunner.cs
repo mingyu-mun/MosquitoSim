@@ -27,6 +27,7 @@ namespace MosquitoSim
         static void ResetStatics()
         {
             Active = false;
+            RoomArea.NetRouteFailures = RoomArea.NetLayouts = RoomArea.NetSideSwaps = RoomArea.NetFitFailures = 0;
             Args.Clear();
             s_Logs.Clear();
             s_LogCount.Clear();
@@ -74,6 +75,28 @@ namespace MosquitoSim
         int m_BadObs, m_ObsChecks, m_TPoses;
         bool m_FlapShot;
 
+        /// <summary>
+        /// model=Assets/...onnx: every agent flies with that trained policy (inference, no trainer)
+        /// instead of the scripted autopilot. Editor only: the model is loaded as an imported asset.
+        /// </summary>
+        void LoadPolicy(MosquitoAgent[] agents)
+        {
+            string path = Arg("model", "");
+            if (path.Length == 0) return;
+#if UNITY_EDITOR
+            var model = UnityEditor.AssetDatabase.LoadAssetAtPath<Unity.InferenceEngine.ModelAsset>(path);
+            if (model == null) { Diagnose("정책", "모델을 불러오지 못함: " + path); return; }
+            foreach (var a in agents)
+            {
+                var bp = a.GetComponent<Unity.MLAgents.Policies.BehaviorParameters>();
+                a.SetModel(bp.BehaviorName, model, Unity.MLAgents.Policies.InferenceDevice.Default);
+            }
+            Diagnose("정책", $"학습 정책으로 비행: {path} (에이전트 {agents.Length}개)");
+#else
+            Diagnose("정책", "model= 은 에디터에서만 쓸 수 있음");
+#endif
+        }
+
         IEnumerator Start()
         {
             Application.runInBackground = true;
@@ -99,6 +122,7 @@ namespace MosquitoSim
             }
             if (agents == null || agents.Length == 0) { Finish("MosquitoAgent 없음 (씬 확인)"); yield break; }
             System.Array.Sort(agents, (a, b) => a.Area.roomIndex.CompareTo(b.Area.roomIndex));
+            LoadPolicy(agents);
             yield return new WaitForSeconds(0.5f);
             Diagnose("씬", $"에이전트 {agents.Length}개, 0번 방 {agents[0].Area.Generator.Current} {Vec(agents[0].Area.Size)}, " +
                           $"stage {agents[0].Stage}, 가구 {agents[0].Area.Obstacles.Active.Count}개, 후보 격자 {agents[0].Area.Candidates.Grid.Count}점");
@@ -203,6 +227,18 @@ namespace MosquitoSim
                         a.Landed ? "O" : "-", a.FeedTimer, a.Stage >= 2 && h.Alert ? "O" : "-",
                         a.Stage >= 2 ? room.hand.Current.ToString() : "-", pose,
                         MosquitoAgent.Episodes, MosquitoAgent.Successes, MosquitoAgent.Caught));
+                    if (room.net != null && room.net.Enabled)
+                    {
+                        // Net rooms: where the mosquito is, and whether the target is a straight flight
+                        // (walls only / walls and the human's body).
+                        Vector3 mp = a.transform.position, tp = a.SubgoalTarget;
+                        bool clearWalls = !Physics.Linecast(mp, tp - (tp - mp).normalized * Mathf.Min(0.1f, (tp - mp).magnitude),
+                            NavGrid.Mask, QueryTriggerInteraction.Ignore);
+                        bool clearBody = !Physics.Linecast(mp, tp - (tp - mp).normalized * Mathf.Min(0.1f, (tp - mp).magnitude),
+                            NavGrid.Mask | (1 << Layers.Human), QueryTriggerInteraction.Ignore);
+                        m_Trace.AppendLine(string.Format(k_Inv, "        모기장 안 {0}  열린 면 {1}  목표까지 직선(벽만) {2}  (사람 몸 포함) {3}  모기 {4}",
+                            room.net.Contains(mp) ? "O" : "X", room.net.OpenSide, clearWalls ? "O" : "X", clearBody ? "O" : "X", Vec(mp)));
+                    }
                     foreach (var ag in agents) CheckObs(ag);
                 }
                 // Wing flap: four chase frames in a row while room 0's mosquito flies.
@@ -239,6 +275,9 @@ namespace MosquitoSim
             foreach (var kv in MosquitoAgent.ProbeOutcomes)
                 Diagnose("점검 결과", $"{kv.Key} {kv.Value.x:0}회, 평균 {kv.Value.y / Mathf.Max(1f, kv.Value.x):0.00}초");
             foreach (var line in MosquitoAgent.HideTrace) Diagnose("HIDE", line);
+            if (RoomArea.NetLayouts > 0)
+                Diagnose("모기장", $"배치 {RoomArea.NetLayouts}회, 열린 면을 바꾼 시도 {RoomArea.NetSideSwaps}회, " +
+                                $"어느 면도 길이 안 열린 배치 {RoomArea.NetRouteFailures}회, 모기장이 들어갈 자리를 못 찾은 배치 {RoomArea.NetFitFailures}회");
             Diagnose("길찾기", $"MOVE_TO·HIDE 스텝 {MosquitoAgent.GuidedSteps}, 경로 없음(직선 대체) {MosquitoAgent.UnroutedSteps}");
             Diagnose("결과", $"에피소드 {MosquitoAgent.Episodes}, 성공 {MosquitoAgent.Successes}, 잡힘 {MosquitoAgent.Caught}, " +
                            $"트랩 {MosquitoAgent.Trapped}, 결정 {MosquitoAgent.Decisions}");

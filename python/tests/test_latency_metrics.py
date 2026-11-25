@@ -84,7 +84,8 @@ def _write_probe(root, name, outcomes, room="R5x4", blocked=None):
 
 
 def test_probe_summary_rates_and_pass(tmp_path):
-    # policy p1: HIDE 9/10, policy p2: HIDE 7/10 -> mean 0.8 -> PASS; MOVE_TO 5/10 and 6/10 -> FAIL
+    # policy p1: HIDE 9/10, policy p2: HIDE 7/10 -> mean 0.8 -> PASS
+    # MOVE_TO p1: 5 reachable all achieved + 5 blocked (left out) -> 5/5; p2: 6/10 -> mean 0.8 -> PASS
     _write_probe(tmp_path, "probe-HIDE__val__p1s1__measured", [("HIDE", "achieved")] * 9 + [("HIDE", "timeout")])
     _write_probe(tmp_path, "probe-HIDE__val__p2s1__measured",
                  [("HIDE", "achieved")] * 7 + [("HIDE", "caught")] * 3, room="LShape")
@@ -99,12 +100,13 @@ def test_probe_summary_rates_and_pass(tmp_path):
     assert by[("probe", "HIDE", "p1")]["achieved"] == pytest.approx(0.9)
     assert by[("probe", "HIDE", "p2")]["caught"] == pytest.approx(0.3)
     assert by[("probe", "HIDE", "p2")]["by_room"] == {"LShape": (0.7, 10)}
-    assert by[("probe", "MOVE_TO", "p1")]["blocked_achieved"] == 0.0 and by[("probe", "MOVE_TO", "p1")]["blocked_n"] == 5
+    m1 = by[("probe", "MOVE_TO", "p1")]
+    assert m1["n"] == 5 and m1["skipped"] == 5 and m1["achieved"] == 1.0
     lo, hi = by[("probe", "HIDE", "p1")]["ci_low"], by[("probe", "HIDE", "p1")]["ci_high"]
     assert lo < 0.9 <= hi
     res = {(o["kind"], o["subgoal"]): o for o in overall}
     assert res[("probe", "HIDE")]["achieved_mean"] == pytest.approx(0.8) and res[("probe", "HIDE")]["passed"]
-    assert res[("probe", "MOVE_TO")]["passed"] is False
+    assert res[("probe", "MOVE_TO")]["achieved_mean"] == pytest.approx(0.8) and res[("probe", "MOVE_TO")]["passed"]
     assert res[("probe-null", "HIDE")]["passed"] is None and res[("probe-null", "HIDE")]["achieved_mean"] == 0.0
 
 
@@ -167,5 +169,38 @@ def test_ground_truth_hide_without_hidden_spot_is_left_out(tmp_path):
                         "probe_time": 4.0, "probe_path_blocked": "False", "probe_target_hidden": str(hidden),
                         "probe_arrived": "True"})
     per_seed, overall = metrics.probe_summary(metrics.load_runs(tmp_path))
-    assert per_seed[0]["n"] == 4 and per_seed[0]["skipped_no_hidden"] == 2
+    assert per_seed[0]["n"] == 4 and per_seed[0]["skipped"] == 2
     assert overall[0]["achieved_mean"] == 1.0
+
+
+def _write_hide(root, name, eps):
+    """eps: (outcome, arrived) per episode, chosen spot hidden."""
+    d = root / name
+    d.mkdir()
+    cols = ["episode", "success", "caught", "trapped", "timeout", "sim_time", "room_type", "probe_subgoal",
+            "probe_outcome", "probe_time", "probe_path_blocked", "probe_target_hidden", "probe_arrived"]
+    with open(d / "episodes.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for i, (out, arrived) in enumerate(eps):
+            w.writerow({"episode": i, "success": "False", "caught": "False", "trapped": "False", "timeout": "False",
+                        "sim_time": 5.0, "room_type": "R5x4", "probe_subgoal": "HIDE", "probe_outcome": out,
+                        "probe_time": 5.0, "probe_path_blocked": "False", "probe_target_hidden": "True",
+                        "probe_arrived": str(arrived)})
+
+
+def test_hide_execution_check_needs_arrival_but_planner_scenario_does_not(tmp_path):
+    # 6 unspotted after arriving, 3 unspotted without arriving, 1 spotted after arriving
+    eps = [("achieved", True)] * 6 + [("achieved", False)] * 3 + [("spotted", True)]
+    _write_hide(tmp_path, "probe-HIDE__val__p1s1__measured", eps)
+    _write_hide(tmp_path, "hide-vlm__val__p1s1__measured", eps)
+    per_seed, overall = metrics.probe_summary(metrics.load_runs(tmp_path))
+    by = {r["kind"]: r for r in per_seed}
+    probe, scenario = by["probe"], by["hide-vlm"]
+    assert probe["achieved"] == pytest.approx(0.6)      # arrived and unspotted only
+    assert probe["unarrived_unspotted"] == 3
+    assert scenario["achieved"] == pytest.approx(0.9)   # the task: not spotted
+    assert scenario["arrived"] == pytest.approx(0.7)
+    assert scenario["achieved_if_arrived"] == pytest.approx(6 / 7)
+    verdict = {o["kind"]: o["passed"] for o in overall}
+    assert verdict["probe"] is False and verdict["hide-vlm"] is None

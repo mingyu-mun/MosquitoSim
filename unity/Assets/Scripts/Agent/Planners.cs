@@ -81,41 +81,30 @@ namespace MosquitoSim
                 if (best != null) return new PlannerCommand(Subgoal.Hide, best.Value.Id);
             }
 
-            SkinZone skin = null;
-            if (c.Stage >= 2)
-            {
-                float far = -1f;
-                foreach (var s in c.AllowedSkins())
-                {
-                    float d = Vector3.Distance(s.Center, c.Hand.Position);
-                    if (d > far) { far = d; skin = s; }
-                }
-            }
-            if (skin == null) skin = Nearest(c, c.AllowedSkins());
-            if (skin == null)
+            var allowed = new List<SkinZone>(c.AllowedSkins());
+            if (allowed.Count == 0)
             {
                 c.ExcludedSkins?.Clear();
-                skin = Nearest(c, c.Human.skins);
+                allowed.AddRange(c.Human.skins);
             }
+            // Preference: stage 2+ the skin farthest from the hand, else the nearest.
+            if (c.Stage >= 2)
+                allowed.Sort((a, b) => Vector3.Distance(b.Center, c.Hand.Position).CompareTo(Vector3.Distance(a.Center, c.Hand.Position)));
+            else
+                allowed.Sort((a, b) => Vector3.Distance(a.Center, c.MosquitoPos).CompareTo(Vector3.Distance(b.Center, c.MosquitoPos)));
 
-            bool blocked = Physics.Linecast(c.MosquitoPos, skin.Center, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore);
-            if (blocked && c.Candidates.Count > 0)
+            // A skin that is a straight flight now (walls, net and the body checked): APPROACH it.
+            foreach (var s in allowed)
+                if (CandidatePoints.CanReachSkin(c.MosquitoPos, s)) return new PlannerCommand(Subgoal.Approach, s.id);
+
+            // None: plan a route through the candidates (each leg a straight flight) to any of them and send
+            // the mosquito to the first point of the shortest one (11/25).
+            if (c.Candidates.Count > 0)
             {
-                // Waypoint: a point the mosquito can fly to in a straight line and
-                // that has a clear line to the human. Without the first check the
-                // rule kept picking a point behind the same obstacle (run02).
-                Candidate? open = null;
-                foreach (var k in c.Candidates)
-                {
-                    if (!k.ClearPath || k.Dist <= SubgoalConstants.MoveToRadius) continue;
-                    if (Physics.Linecast(c.MosquitoPos, k.Pos, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore)) continue;
-                    if (open == null || k.Dist < open.Value.Dist) open = k;
-                }
-                if (open == null) open = NearestCandidate(c, true);
-                if (open != null && open.Value.Dist > SubgoalConstants.MoveToRadius)
-                    return new PlannerCommand(Subgoal.MoveTo, open.Value.Id);
+                Candidate? hop = FirstHop(c, allowed);
+                if (hop != null) return new PlannerCommand(Subgoal.MoveTo, hop.Value.Id);
             }
-            return new PlannerCommand(Subgoal.Approach, skin.id);
+            return new PlannerCommand(Subgoal.Approach, allowed[0].id);
         }
 
         /// <summary>
@@ -144,7 +133,12 @@ namespace MosquitoSim
                     return new PlannerCommand(Subgoal.Hide, pool[rng.Next(pool.Count)].Id);
                 }
                 default:
-                    return new PlannerCommand(Subgoal.MoveTo, c.Candidates[rng.Next(c.Candidates.Count)].Id);
+                {
+                    // Only points the mosquito can fly to in a straight line (11/25).
+                    var pool = Reachable(c);
+                    if (pool.Count == 0) return new PlannerCommand(Subgoal.Approach, skins[rng.Next(skins.Count)].id);
+                    return new PlannerCommand(Subgoal.MoveTo, pool[rng.Next(pool.Count)].Id);
+                }
             }
         }
 
@@ -173,6 +167,9 @@ namespace MosquitoSim
                     if (c.Candidates.Count == 0) break;
                     var pool = new List<Candidate>();
                     if (g == Subgoal.Hide) foreach (var k in c.Candidates) if (k.Hidden) pool.Add(k);
+                    // MOVE_TO checks a straight flight: only reachable points (11/25). None reachable
+                    // falls back to any point; it is logged as path_blocked and left out of the rate.
+                    if (g == Subgoal.MoveTo) pool = Reachable(c);
                     if (pool.Count == 0) pool.AddRange(c.Candidates);
                     return new PlannerCommand(g, pool[rng.Next(pool.Count)].Id);
                 }
@@ -194,6 +191,78 @@ namespace MosquitoSim
                 float d = Vector3.Distance(s.Center, c.MosquitoPos);
                 if (d < bestD) { bestD = d; best = s; }
             }
+            return best;
+        }
+
+        /// <summary>Candidates the mosquito can fly to in a straight line, farther than the MOVE_TO radius.</summary>
+        static List<Candidate> Reachable(PlannerContext c)
+        {
+            var pool = new List<Candidate>();
+            foreach (var k in c.Candidates)
+                if (k.Reachable && k.Dist > SubgoalConstants.MoveToRadius) pool.Add(k);
+            return pool;
+        }
+
+        /// <summary>
+        /// Shortest route from the mosquito over the candidates to a point from which one of
+        /// <paramref name="skins"/> is a straight flight, every leg a straight flight (Dijkstra over at most
+        /// 10 nodes). Returns the first point; with no route, the reachable candidate nearest a skin if it is
+        /// nearer than the mosquito; else null (the caller APPROACHes).
+        /// </summary>
+        static Candidate? FirstHop(PlannerContext c, List<SkinZone> skins)
+        {
+            var nodes = new List<Vector3> { c.MosquitoPos };
+            foreach (var k in c.Candidates) nodes.Add(k.Pos);
+            int n = nodes.Count + 1, g = n - 1; // g: "a skin is a straight flight from here"
+            var dist = new float[n];
+            var prev = new int[n];
+            var done = new bool[n];
+            for (int i = 0; i < n; i++) { dist[i] = float.MaxValue; prev[i] = -1; }
+            dist[0] = 0f;
+            for (int it = 0; it < n; it++)
+            {
+                int u = -1;
+                for (int i = 0; i < n; i++) if (!done[i] && (u < 0 || dist[i] < dist[u])) u = i;
+                if (u < 0 || dist[u] == float.MaxValue) break;
+                done[u] = true;
+                if (u == g) break;
+                for (int v = 1; v < n; v++)
+                {
+                    if (done[v]) continue;
+                    float leg;
+                    if (v == g)
+                    {
+                        leg = float.MaxValue;
+                        foreach (var s in skins)
+                            if (CandidatePoints.CanReachSkin(nodes[u], s)) leg = Mathf.Min(leg, Vector3.Distance(nodes[u], s.Center));
+                        if (leg == float.MaxValue) continue;
+                    }
+                    else
+                    {
+                        // From the mosquito use the flag computed at selection; between points check now.
+                        bool clear = u == 0 ? c.Candidates[v - 1].Reachable : CandidatePoints.StraightClear(nodes[u], nodes[v]);
+                        if (!clear) continue;
+                        leg = Vector3.Distance(nodes[u], nodes[v]);
+                    }
+                    float d = dist[u] + leg;
+                    if (d < dist[v]) { dist[v] = d; prev[v] = u; }
+                }
+            }
+            if (prev[g] > 0)
+            {
+                int v = prev[g];
+                while (prev[v] != 0) v = prev[v];
+                if (c.Candidates[v - 1].Dist > SubgoalConstants.MoveToRadius) return c.Candidates[v - 1];
+            }
+            Candidate? best = null;
+            float bestD = float.MaxValue;
+            foreach (var s in skins) bestD = Mathf.Min(bestD, Vector3.Distance(c.MosquitoPos, s.Center));
+            foreach (var k in Reachable(c))
+                foreach (var s in skins)
+                {
+                    float d = Vector3.Distance(k.Pos, s.Center);
+                    if (d < bestD) { bestD = d; best = k; }
+                }
             return best;
         }
 

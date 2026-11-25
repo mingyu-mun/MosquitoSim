@@ -84,6 +84,84 @@ namespace MosquitoSim
             return best;
         }
 
+        /// <summary>Free cells connected to the cell nearest <paramref name="from"/> (6 neighbours), or null.</summary>
+        public bool[] Flood(Vector3 from)
+        {
+            if (!Built) return null;
+            int s = NearestFree(from);
+            if (s < 0) return null;
+            var seen = new bool[m_Free.Length];
+            var queue = new Queue<int>();
+            seen[s] = true;
+            queue.Enqueue(s);
+            while (queue.Count > 0)
+            {
+                int i = queue.Dequeue();
+                int z = i % m_Nz, y = (i / m_Nz) % m_Ny, x = i / (m_Nz * m_Ny);
+                for (int k = 0; k < 6; k++)
+                {
+                    int nx = x + k_Dx[k], ny = y + k_Dy[k], nz = z + k_Dz[k];
+                    if (nx < 0 || ny < 0 || nz < 0 || nx >= m_Nx || ny >= m_Ny || nz >= m_Nz) continue;
+                    int j = Index(nx, ny, nz);
+                    if (!m_Free[j] || seen[j]) continue;
+                    seen[j] = true;
+                    queue.Enqueue(j);
+                }
+            }
+            return seen;
+        }
+
+        /// <summary>
+        /// The cell that contains <paramref name="p"/> is itself free and in <paramref name="region"/>.
+        /// Used for start positions: a point inside a hollow cabinet is in a blocked cell (11/25).
+        /// </summary>
+        public bool CellInRegion(bool[] region, Vector3 p)
+        {
+            if (!Built || region == null) return false;
+            Vector3 g = (p - m_Origin) / Cell;
+            int x = Mathf.RoundToInt(g.x), y = Mathf.RoundToInt(g.y), z = Mathf.RoundToInt(g.z);
+            if (x < 0 || y < 0 || z < 0 || x >= m_Nx || y >= m_Ny || z >= m_Nz) return false;
+            int i = Index(x, y, z);
+            return m_Free[i] && region[i];
+        }
+
+        /// <summary>The largest set of connected free cells (the room's open space), or null.</summary>
+        public bool[] LargestRegion()
+        {
+            if (!Built) return null;
+            var seen = new bool[m_Free.Length];
+            bool[] best = null;
+            int bestCount = 0;
+            for (int i = 0; i < m_Free.Length; i++)
+            {
+                if (!m_Free[i] || seen[i]) continue;
+                bool[] region = Flood(Center(i));
+                int n = 0;
+                for (int j = 0; j < region.Length; j++)
+                    if (region[j]) { seen[j] = true; n++; }
+                if (n > bestCount) { bestCount = n; best = region; }
+            }
+            return best;
+        }
+
+        /// <summary>The free cell nearest <paramref name="p"/> is in <paramref name="region"/>.</summary>
+        public bool InRegion(bool[] region, Vector3 p)
+        {
+            if (region == null) return false;
+            int i = NearestFree(p);
+            return i >= 0 && region[i];
+        }
+
+        /// <summary>Cells of <paramref name="region"/> (or all free cells) whose centre passes <paramref name="where"/>.</summary>
+        public int CountCells(bool[] region, System.Func<Vector3, bool> where)
+        {
+            if (!Built) return 0;
+            int n = 0;
+            for (int i = 0; i < m_Free.Length; i++)
+                if ((region == null ? m_Free[i] : region[i]) && where(Center(i))) n++;
+            return n;
+        }
+
         static readonly int[] k_Dx = { 1, -1, 0, 0, 0, 0 };
         static readonly int[] k_Dy = { 0, 0, 1, -1, 0, 0 };
         static readonly int[] k_Dz = { 0, 0, 0, 0, 1, -1 };
