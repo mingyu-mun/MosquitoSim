@@ -61,6 +61,33 @@ namespace MosquitoSim
             Physics.SyncTransforms();
         }
 
+        /// <summary>Open another side (the net stays where it is).</summary>
+        public void SetOpenSide(int openSide)
+        {
+            EnsureBuilt();
+            OpenSide = openSide;
+            for (int i = 0; i < 4; i++) m_Sides[i].gameObject.SetActive(i != openSide);
+            Physics.SyncTransforms();
+        }
+
+        /// <summary>Point 0.3 m inside the open side, at height y (the way in, seen from inside).</summary>
+        public Vector3 OpeningInside(float y) => transform.TransformPoint(k_Dirs[OpenSide] * (Half - 0.3f) + Vector3.up * y);
+
+        /// <summary>Point 0.3 m outside the open side, at height y.</summary>
+        public Vector3 OpeningOutside(float y) => SideOutsidePoint(OpenSide, y);
+
+        /// <summary>
+        /// Point outside corner i (0: +x+z, 1: +x-z, 2: -x-z, 3: -x+z), as far out as the side points, at
+        /// height y. With the side points they ring the net, so the mosquito can go round it in straight legs.
+        /// </summary>
+        public Vector3 CornerOutsidePoint(int i, float y)
+        {
+            float a = Half + 0.3f;
+            Vector3 c = i == 0 ? new Vector3(a, 0f, a) : i == 1 ? new Vector3(a, 0f, -a)
+                      : i == 2 ? new Vector3(-a, 0f, -a) : new Vector3(-a, 0f, a);
+            return transform.TransformPoint(c + Vector3.up * y);
+        }
+
         public void Disable()
         {
             EnsureBuilt();

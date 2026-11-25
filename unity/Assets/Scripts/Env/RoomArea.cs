@@ -30,6 +30,13 @@ namespace MosquitoSim
         public CandidatePoints Candidates { get; private set; }
         /// <summary>Free-space grid for routing MOVE_TO / HIDE around obstacles (stage 1+).</summary>
         public readonly NavGrid Nav = new NavGrid();
+        /// <summary>Net rooms: free cells that connect to the open side.</summary>
+        public bool[] NetRegion { get; private set; }
+        /// <summary>Cells the mosquito may start in: the net's open side region, else the room's largest
+        /// open space. Null when no grid is built (stage 0 empty room).</summary>
+        public bool[] SpawnRegion { get; private set; }
+        /// <summary>Auto-test report: net layouts where no side gave a way in to every skin.</summary>
+        public static int NetRouteFailures, NetLayouts, NetSideSwaps;
         public CueObjects Cues { get; private set; }
         public RoomDecor Decor { get; private set; }
         public NetObstacle Net => net;
@@ -53,6 +60,7 @@ namespace MosquitoSim
         public void ResetEpisode(EnvParams p, int stage, System.Random rng)
         {
             RoomType[] types = p.RoomTypes();
+            NetRegion = SpawnRegion = null; // rebuilt below; cue placement must not use the last layout's
             Generator.Build(types[rng.Next(types.Length)], rng); // size and colours vary per episode
             Obstacles.Clear();
             Cues.Clear();
@@ -68,10 +76,14 @@ namespace MosquitoSim
             if (p.UseNet && net != null)
             {
                 // The net goes around the human, so the human comes first and the rest keeps clear of it.
+                // The human only stands where the whole net fits inside the room (11/25); the net is turned
+                // close to the room axes so it does not cut into a wall.
+                m_NetYaw = 90f * rng.Next(4) + Range(rng, -10f, 10f);
                 human.ResetHuman(this, humanRng, walking, p.FastHuman, p.BiteAlertChance);
                 Decor.PlaceStructure(decorRng, this, human, stage >= 1);
-                net.Place(human.transform.position, (float)rng.NextDouble() * 360f, rng.Next(4));
-                keepAway = 1.3f;
+                net.Place(human.transform.position, m_NetYaw, rng.Next(4));
+                m_NetYaw = float.NaN;
+                keepAway = NetObstacle.Half + 0.6f;
                 if (stage >= 1)
                 {
                     Obstacles.Spawn(rng, this, p.UseObstacleSetB, 3 + rng.Next(3), human, keepAway);
@@ -102,11 +114,15 @@ namespace MosquitoSim
             {
                 Candidates.BuildGrid(this);
                 Nav.Build(InnerBounds);
+                NetRegion = null;
+                if (p.UseNet && net != null && net.Enabled) EnsureNetRoute(rng);
+                SpawnRegion = NetRegion ?? Nav.LargestRegion();
             }
             else
             {
                 Candidates.Current.Clear();
                 Nav.Clear();
+                NetRegion = SpawnRegion = null;
             }
         }
 
@@ -121,16 +137,28 @@ namespace MosquitoSim
         /// <summary>Floor spot where a 0.35 m wide human fits, head included (not in the L corner, furniture or clutter).</summary>
         public Vector3 RandomHumanSpot(System.Random rng)
         {
-            Vector3 p = RandomFloorPoint(rng, 0.6f);
-            for (int i = 0; i < 50; i++)
+            // Net rooms: far enough from the walls for the net, and the net's box free of geometry.
+            bool forNet = !float.IsNaN(m_NetYaw);
+            float margin = forNet ? NetObstacle.Half + 0.15f : 0.6f;
+            Vector3 p = RandomFloorPoint(rng, margin);
+            for (int i = 0; i < 100; i++)
             {
-                if (!Physics.CheckCapsule(p + Vector3.up * 0.4f, p + Vector3.up * 1.55f, 0.35f,
-                        Layers.WorldNoHuman, QueryTriggerInteraction.Ignore))
-                    return p;
-                p = RandomFloorPoint(rng, 0.6f);
+                bool free = !Physics.CheckCapsule(p + Vector3.up * 0.4f, p + Vector3.up * 1.55f, 0.35f,
+                    Layers.WorldNoHuman, QueryTriggerInteraction.Ignore);
+                if (free && forNet)
+                    free = !Physics.CheckBox(p + Vector3.up * (NetObstacle.NetHeight * 0.5f + 0.05f),
+                        new Vector3(NetObstacle.Half + 0.05f, NetObstacle.NetHeight * 0.5f - 0.05f, NetObstacle.Half + 0.05f),
+                        Quaternion.Euler(0f, m_NetYaw, 0f), Layers.WorldNoHuman, QueryTriggerInteraction.Ignore);
+                if (free) return p;
+                p = RandomFloorPoint(rng, margin);
             }
+            if (forNet) NetFitFailures++;
             return p;
         }
+
+        float m_NetYaw = float.NaN; // set while the human is placed for a net room
+        /// <summary>Auto-test report: net rooms where no spot fitted the whole net.</summary>
+        public static int NetFitFailures;
 
         /// <summary>Random point in the air, free of geometry, outside the net, away from the human.</summary>
         public Vector3 SampleFreePoint(System.Random rng, float minDistanceFromHuman, float radius = -1f)
@@ -143,6 +171,9 @@ namespace MosquitoSim
                 p = q + Vector3.up * Range(rng, minHeight, maxHeight);
                 if (Physics.CheckSphere(p, r, ~0, QueryTriggerInteraction.Ignore)) continue;
                 if (net != null && net.Contains(p)) continue;
+                // The start cell itself must be open space connected to the room (or the net's way in):
+                // not inside a hollow cabinet or drawer (11/25, room 0 of the net check).
+                if (SpawnRegion != null && !Nav.CellInRegion(SpawnRegion, p)) continue;
                 Vector3 flat = p - human.transform.position;
                 flat.y = 0f;
                 if (flat.magnitude < minDistanceFromHuman) continue;
@@ -150,6 +181,52 @@ namespace MosquitoSim
             }
             Debug.LogWarning($"{name}: no free point found");
             return p;
+        }
+
+        /// <summary>
+        /// Net rooms (11/25): the open side must lead in. A side passes when the point just outside it is
+        /// free, most of the free space outside the net connects to it, the point just inside connects to
+        /// it, and some uncovered skin is a straight flight (body included) from just outside. The drawn side is tried
+        /// first, then the others in random order; the first that passes stays open.
+        /// </summary>
+        void EnsureNetRoute(System.Random rng)
+        {
+            var order = new List<int> { net.OpenSide };
+            var rest = new List<int>();
+            for (int i = 0; i < 4; i++) if (i != net.OpenSide) rest.Add(i);
+            while (rest.Count > 0) { int k = rng.Next(rest.Count); order.Add(rest[k]); rest.RemoveAt(k); }
+            NetLayouts++;
+            foreach (int side in order)
+            {
+                if (side != order[0]) NetSideSwaps++;
+                if (side != net.OpenSide)
+                {
+                    net.SetOpenSide(side);
+                    Nav.Build(InnerBounds);
+                }
+                if (NetRouteOk(out bool[] region)) { NetRegion = region; return; }
+            }
+            NetRouteFailures++;
+            Debug.LogWarning($"{name}: no side of the net leads in to every skin");
+        }
+
+        bool NetRouteOk(out bool[] region)
+        {
+            region = null;
+            const float y = 1.2f;
+            Vector3 outside = net.OpeningOutside(y), inside = net.OpeningInside(y);
+            if (!InnerBounds.Contains(outside)) return false;
+            if (Physics.CheckSphere(outside, 0.1f, NavGrid.Mask, QueryTriggerInteraction.Ignore)) return false;
+            region = Nav.Flood(outside);
+            if (region == null || !Nav.InRegion(region, inside)) return false;
+            int reach = Nav.CountCells(region, c => !net.Contains(c));
+            int all = Nav.CountCells(null, c => !net.Contains(c));
+            if (all == 0 || reach < 0.5f * all) return false;
+            // At least one uncovered skin must be a straight flight from the point just outside the opening
+            // (a candidate of the ring), so a planner can go there and then APPROACH (11/25).
+            foreach (var s in human.skins)
+                if (!s.covered && CandidatePoints.CanReachSkin(outside, s)) return true;
+            return false;
         }
 
         static float Range(System.Random rng, float a, float b) => a + (float)rng.NextDouble() * (b - a);

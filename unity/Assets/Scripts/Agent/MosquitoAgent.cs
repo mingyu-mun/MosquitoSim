@@ -79,7 +79,8 @@ namespace MosquitoSim
         /// <summary>Point the policy is steered to: a route waypoint for MOVE_TO / HIDE, else the target.</summary>
         public Vector3 GuideTarget => m_Guide.Active ? m_Guide.Waypoint : m_Tracker.Target;
         readonly PathGuide m_Guide = new PathGuide();
-        bool Guided => m_P.PathGuide && (m_Tracker.Command.Subgoal == Subgoal.MoveTo || m_Tracker.Command.Subgoal == Subgoal.Hide);
+        // MOVE_TO is a straight flight (11/25): routing round obstacles is the planner's job, so it is not guided.
+        bool Guided => m_P.PathGuide && m_Tracker.Command.Subgoal == Subgoal.Hide;
         public float FeedTimer => m_FeedTimer;
         public bool Landed => m_Motor != null && m_Motor.IsLanded;
         public Vector3 Velocity => m_Motor != null ? m_Motor.Velocity : Vector3.zero;
@@ -468,6 +469,7 @@ namespace MosquitoSim
                     .Key("dist").Value(c.Dist)
                     .Key("hidden").Value(c.Hidden)
                     .Key("clear_path").Value(c.ClearPath)
+                    .Key("reachable").Value(c.Reachable)
                     .Key("near_trap").Value(c.NearTrap)
                     .EndObject();
             }
@@ -699,8 +701,8 @@ namespace MosquitoSim
             m_ProbeStarted = true;
             m_ProbeTarget = cmd.Target;
             m_ProbeStartDist = m_ProbeMinDist = Vector3.Distance(pos, m_Tracker.Target);
-            m_ProbePathBlocked = cmd.Subgoal != Subgoal.Evade &&
-                Physics.Linecast(pos, m_Tracker.Target, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore);
+            // Same test as a MOVE_TO candidate's Reachable flag, so the two agree (11/25).
+            m_ProbePathBlocked = cmd.Subgoal != Subgoal.Evade && !CandidatePoints.StraightClear(pos, m_Tracker.Target);
             m_ProbeTargetHeight = m_Tracker.Target.y - m_Area.human.transform.position.y;
             m_ProbeTargetHidden = false;
             if (snapshot != null)
@@ -740,18 +742,23 @@ namespace MosquitoSim
             m_ProbeOutcome = outcome;
             m_ProbeTime = m_SimTime - (m_HideScenario ? m_SearchStart : m_Tracker.StartTime);
             string n = PlannerCommand.WireName(m_ProbeSubgoal);
+            // Ground-truth HIDE check (does the policy carry out HIDE?): unspotted counts only after arriving
+            // at the spot. The planner scenario counts unspotted as the task does (11/25). probe_outcome in
+            // episode_end stays as judged; metrics.py --probe applies the same rule from probe_arrived.
+            bool achieved = outcome == "achieved" && (!(m_Probe && m_HideScenario) || m_ProbeArrived);
+            string key = outcome == "achieved" && !achieved ? "achieved_unarrived" : outcome;
             ProbeStats.TryGetValue(n, out Vector3 s);
             s.x += 1f;
-            if (outcome == "achieved") { s.y += 1f; s.z += m_ProbeTime; }
+            if (achieved) { s.y += 1f; s.z += m_ProbeTime; }
             ProbeStats[n] = s;
-            ProbeOutcomes.TryGetValue(n + "/" + outcome, out Vector2 o);
-            ProbeOutcomes[n + "/" + outcome] = new Vector2(o.x + 1f, o.y + m_ProbeTime);
+            ProbeOutcomes.TryGetValue(n + "/" + key, out Vector2 o);
+            ProbeOutcomes[n + "/" + key] = new Vector2(o.x + 1f, o.y + m_ProbeTime);
             if (m_HideScenario && HideTrace.Count < 12)
                 HideTrace.Add($"{outcome} {m_ProbeTime:0.00}s  도착 {(m_ProbeArrived ? "O" : "X")} 이동시간 {m_ProbeTravel:0.0}s  시작 시 몸 앞과 모기 각 {m_SearchAngle:0}°  " +
                               $"목표까지 {m_ProbeStartDist:0.00}m → 최소 {m_ProbeMinDist:0.00}m  목표 가려짐 {(m_ProbeTargetHidden ? "O" : "X")}  " +
                               $"이동 {Vector3.Distance(transform.position, m_SoundPos):0.00}m");
             var stats = Academy.Instance.StatsRecorder;
-            stats.Add("Probe/" + n + "/Achieved", outcome == "achieved" ? 1f : 0f);
+            stats.Add("Probe/" + n + "/Achieved", achieved ? 1f : 0f);
         }
 
         /// <summary>

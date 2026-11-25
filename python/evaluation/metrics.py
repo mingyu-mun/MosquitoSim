@@ -43,7 +43,8 @@ def load_runs(root: Path) -> List[dict]:
                              "probe_path_blocked": _bool(r.get("probe_path_blocked")),
                              # None when the column is absent (older logs): not treated as "no hidden spot".
                              "probe_target_hidden": _bool(r["probe_target_hidden"]) if r.get("probe_target_hidden") else None,
-                             "probe_arrived": _bool(r.get("probe_arrived"))})
+                             # None when absent (logs before 11/22): arrival unknown.
+                             "probe_arrived": _bool(r["probe_arrived"]) if r.get("probe_arrived") else None})
     return rows
 
 
@@ -89,6 +90,13 @@ def probe_summary(rows: Iterable[dict]) -> Tuple[List[dict], List[dict]]:
     Run kind: "probe" (direct check, ground-truth targets), "probe-null" (do-nothing baseline), or
     "hide-<condition>" (HIDE scenario with that planner choosing the spot). The pass verdict applies
     to "probe": mean over policy seeds >= PASS_RATE.
+
+    HIDE counts differently by kind (11/25):
+    - probe / probe-null (does the policy carry out HIDE?): achieved only if the mosquito reached the
+      spot (probe_arrived) and was not spotted. Unspotted without arriving is not execution; it is
+      counted apart as "unarrived_unspotted".
+    - hide-<condition> (planner comparison): achieved = not spotted, as the task defines it; arrival
+      and whether the chosen spot was hidden are reported beside it.
     """
     groups: Dict[Tuple[str, str, str, str], List[dict]] = defaultdict(list)
     skipped: Dict[Tuple[str, str, str, str], int] = defaultdict(int)
@@ -102,26 +110,39 @@ def probe_summary(rows: Iterable[dict]) -> Tuple[List[dict], List[dict]]:
             # Ground-truth HIDE with no hidden candidate in the room: nothing to test, left out of the rate.
             skipped[(r["split"], kind, r["probe_subgoal"], policy_seed(r["seed"]))] += 1
             continue
+        if kind != "probe-null" and r["probe_subgoal"] == "MOVE_TO" and r["probe_path_blocked"]:
+            # MOVE_TO is a straight flight (11/25); a target behind an obstacle (only when no candidate was
+            # reachable) tests the planner's routing, not the policy, so it is left out of the rate.
+            skipped[(r["split"], kind, r["probe_subgoal"], policy_seed(r["seed"]))] += 1
+            continue
         groups[(r["split"], kind, r["probe_subgoal"], policy_seed(r["seed"]))].append(r)
     per_seed = []
     for (split, kind, sub, pseed), rs in sorted(groups.items()):
-        ok = [1.0 if r["probe_outcome"] == "achieved" else 0.0 for r in rs]
+        unspotted = [r["probe_outcome"] == "achieved" for r in rs]
+        execution = sub == "HIDE" and not kind.startswith("hide-")
+        if execution and any(r["probe_arrived"] is None for r in rs):
+            print(f"warning: {split}/{kind}/HIDE/{pseed}: no probe_arrived column; "
+                  f"HIDE counted without the arrival check", file=sys.stderr)
+            execution = False
+        ok = [1.0 if u and (not execution or r["probe_arrived"]) else 0.0 for u, r in zip(unspotted, rs)]
         rate, lo, hi = bootstrap_mean(ok)
         times = [r["probe_time"] for r in rs if r["probe_outcome"] == "achieved"]
         blocked = [x for x, r in zip(ok, rs) if r["probe_path_blocked"]]
         rec = {"split": split, "kind": kind, "subgoal": sub, "policy": pseed, "n": len(rs),
-               "skipped_no_hidden": skipped[(split, kind, sub, pseed)],
+               "skipped": skipped[(split, kind, sub, pseed)],  # HIDE: no hidden spot; MOVE_TO: not reachable
                "achieved": rate, "ci_low": lo, "ci_high": hi,
                "median_s": float(np.median(times)) if times else float("nan"),
                "blocked_n": len(blocked), "blocked_achieved": float(np.mean(blocked)) if blocked else float("nan")}
         for o in PROBE_OUTCOMES:
-            rec[o] = float(np.mean([r["probe_outcome"] == o for r in rs]))
+            if o != "achieved":  # "achieved" is the counted rate above (HIDE: arrival checked)
+                rec[o] = float(np.mean([r["probe_outcome"] == o for r in rs]))
         if sub == "HIDE":
             # Choice vs execution: did it pick a hidden spot, did it get there, and did hiding work once there.
-            arrived = [x for x, r in zip(ok, rs) if r["probe_arrived"]]
+            arrived = [u for u, r in zip(unspotted, rs) if r["probe_arrived"]]
             rec["chose_hidden"] = float(np.mean([bool(r["probe_target_hidden"]) for r in rs]))
             rec["arrived"] = len(arrived) / len(rs)
             rec["achieved_if_arrived"] = float(np.mean(arrived)) if arrived else float("nan")
+            rec["unarrived_unspotted"] = sum(1 for u, r in zip(unspotted, rs) if u and not r["probe_arrived"])
         by_room: Dict[str, List[float]] = defaultdict(list)
         for x, r in zip(ok, rs):
             by_room[r["room_type"] or "?"].append(x)
@@ -191,12 +212,19 @@ def main() -> int:
             print("no probe runs found", file=sys.stderr)
             return 1
         print("split\tkind\tsubgoal\tpolicy\tn\tachieved\t95% CI\tmedian_s\ttimeout\tcaught\t"
-              "blocked_achieved(n)\tby_room")
+              "blocked_achieved(n)\tskipped\tby_room")
         for r in per_seed:
             rooms = " ".join(f"{k}:{v[0]:.2f}({v[1]})" for k, v in r["by_room"].items())
             print(f"{r['split']}\t{r['kind']}\t{r['subgoal']}\t{r['policy']}\t{r['n']}\t{r['achieved']:.3f}\t"
                   f"[{r['ci_low']:.2f}, {r['ci_high']:.2f}]\t{r['median_s']:.1f}\t{r['timeout']:.2f}\t"
-                  f"{r['caught']:.2f}\t{r['blocked_achieved']:.2f}({r['blocked_n']})\t{rooms}")
+                  f"{r['caught']:.2f}\t{r['blocked_achieved']:.2f}({r['blocked_n']})\t{r['skipped']}\t{rooms}")
+        hide = [r for r in per_seed if r["subgoal"] == "HIDE" and "arrived" in r]
+        if hide:
+            print("\nHIDE: probe counts only arrived + unspotted; hide-<condition> counts unspotted")
+            print("split\tkind\tpolicy\tn\tachieved\tarrived\tachieved_if_arrived\tunarrived_unspotted\tchose_hidden")
+            for r in hide:
+                print(f"{r['split']}\t{r['kind']}\t{r['policy']}\t{r['n']}\t{r['achieved']:.3f}\t{r['arrived']:.3f}\t"
+                      f"{r['achieved_if_arrived']:.3f}\t{r['unarrived_unspotted']}\t{r['chose_hidden']:.3f}")
         print(f"\nmean over policy seeds (pass: >= {PASS_RATE:.0%})")
         for o in overall:
             verdict = "" if o["passed"] is None else ("PASS" if o["passed"] else "FAIL")

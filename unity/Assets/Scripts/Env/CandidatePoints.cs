@@ -11,6 +11,7 @@ namespace MosquitoSim
         public float Dist;       // from the mosquito
         public bool Hidden;      // not visible from the human's head
         public bool ClearPath;   // straight line to the human's chest is open
+        public bool Reachable;   // the mosquito can fly there in a straight line now (11/25)
         public bool NearTrap;    // within 0.2 m of a sticky trap
     }
 
@@ -53,6 +54,16 @@ namespace MosquitoSim
         {
             var pts = new List<Vector3>();
 
+            // Net rooms: the 4 side points and 4 corner points ring the net (one side is open; all are
+            // treated the same, so the ring gives no hint which). Straight legs round the ring reach the
+            // open side from anywhere outside (11/25). Points inside furniture or walls are skipped.
+            if (net != null && net.Enabled)
+                for (int i = 0; i < 4; i++)
+                {
+                    TryAddFree(pts, net.SideOutsidePoint(i, 1.2f));
+                    TryAddFree(pts, net.CornerOutsidePoint(i, 1.2f));
+                }
+
             // Hidden points nearest to the mosquito.
             var hidden = new List<Vector3>();
             foreach (var p in m_Grid)
@@ -68,9 +79,6 @@ namespace MosquitoSim
                 TryAdd(pts, p);
             }
 
-            // Net sides (one of them is the open side; all treated the same).
-            if (net != null && net.Enabled)
-                for (int i = 0; i < 4; i++) TryAdd(pts, net.SideOutsidePoint(i, 1.2f));
 
             // Points next to traps.
             if (cues != null && cues.TrapPositions.Count > 0)
@@ -122,9 +130,28 @@ namespace MosquitoSim
                     Dist = Vector3.Distance(p, mosquito),
                     Hidden = HiddenWithMargin(human, p),
                     ClearPath = !Physics.Linecast(p, human.Chest, Layers.WorldNoHuman, QueryTriggerInteraction.Ignore),
+                    Reachable = StraightClear(mosquito, p),
                     NearTrap = cues != null && cues.NearTrap(p, 0.2f),
                 });
             }
+        }
+
+        /// <summary>Body radius checked along a straight flight (the mosquito is tiny; rays handle the rest).</summary>
+        public const float FlightRadius = 0.03f;
+
+        /// <summary>
+        /// A straight flight from a to b touches no wall, furniture, decor, net, trap or the human's body in
+        /// its current pose (checked when a decision is made). This is what MOVE_TO can do (11/25): a point
+        /// behind an obstacle needs the planner to go round it through other points. In the net the body
+        /// fills much of the inside, so it counts (run42).
+        /// </summary>
+        public static bool StraightClear(Vector3 a, Vector3 b)
+        {
+            Vector3 d = b - a;
+            float len = d.magnitude;
+            if (len < 1e-4f) return true;
+            return !Physics.SphereCast(a, FlightRadius, d / len, out RaycastHit _, len,
+                NavGrid.Mask | (1 << Layers.Human), QueryTriggerInteraction.Ignore);
         }
 
         /// <summary>
@@ -169,6 +196,32 @@ namespace MosquitoSim
             }
             c = default(Candidate);
             return false;
+        }
+
+        bool TryAddFree(List<Vector3> pts, Vector3 p)
+        {
+            if (Physics.CheckSphere(p, 0.1f, NavGrid.Mask, QueryTriggerInteraction.Ignore)) return false;
+            var area = GetComponent<RoomArea>();
+            if (area != null && !area.InnerBounds.Contains(p)) return false;
+            return TryAdd(pts, p);
+        }
+
+        /// <summary>
+        /// The last leg to a skin (11/25): a straight flight to the nearest point of the zone that touches
+        /// nothing on the way, the human's own body included (torso, other limbs); only the target zone
+        /// itself may be hit. In the net, a skin behind the body is not a straight flight (run40).
+        /// </summary>
+        public static bool CanReachSkin(Vector3 from, SkinZone skin)
+        {
+            Vector3 p = skin.ClosestSurfacePoint(from, out Vector3 _);
+            Vector3 d = p - from;
+            float len = d.magnitude;
+            if (len <= 0.03f) return true;
+            var hits = Physics.SphereCastAll(from, FlightRadius, d / len, len - 0.02f,
+                NavGrid.Mask | (1 << Layers.Human), QueryTriggerInteraction.Ignore);
+            foreach (var h in hits)
+                if (h.collider.GetComponent<SkinZone>() != skin) return false;
+            return true;
         }
 
         static bool TryAdd(List<Vector3> pts, Vector3 p)
