@@ -232,3 +232,4 @@ def test_route_summary(tmp_path):
     assert r["approach_blocked"] == pytest.approx(3 / 5)
     assert r["net_entered"] == pytest.approx(0.5) and r["net_enter_s"] == pytest.approx(4.0)
     assert r["efficiency"] == pytest.approx((1.0 + 0.5) / 2)
+    assert r["detour_n"] == 3 and r["detour_success"] == pytest.approx(2 / 3) and r["detour_self"] == 0

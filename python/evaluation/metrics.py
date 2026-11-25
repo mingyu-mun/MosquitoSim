@@ -78,7 +78,9 @@ def route_summary(rows: Iterable[dict]) -> List[dict]:
     success_if_route: feeding success among those episodes. moveto_blocked / approach_blocked: share of
     commands that were not a straight flight when given (the planner sent the mosquito into a wall).
     net_entered / net_enter_s: net rooms only. efficiency: shortest route hops / MOVE_TO commands used,
-    over successful episodes that needed a detour (1 = no extra hops).
+    over successful episodes that needed a detour and used MOVE_TO (1 = no extra hops). detour_success:
+    success among episodes that needed a detour; detour_self: of those successes, how many used no MOVE_TO
+    (the low-level policy found the way itself).
     """
     groups: Dict[Tuple[str, str, str], List[dict]] = defaultdict(list)
     for r in rows:
@@ -92,7 +94,10 @@ def route_summary(rows: Iterable[dict]) -> List[dict]:
         ap = sum(r["approach_commands"] for r in rs)
         nets = [r for r in rs if r["net"]]
         entered = [r for r in nets if r["net_enter_time"] >= 0]
-        detours = [r for r in found if r["route_hops"] > 0 and r["success"]]
+        # Successful episodes that needed a detour: with MOVE_TO (planner-led) or without (the policy found it)
+        detours = [r for r in found if r["route_hops"] > 0 and r["success"] and r["moveto_commands"] > 0]
+        self_led = [r for r in found if r["route_hops"] > 0 and r["success"] and r["moveto_commands"] == 0]
+        need = [r for r in found if r["route_hops"] > 0]
         nan = float("nan")
         out.append({
             "split": split, "condition": cond, "latency": lat, "n": len(rs),
@@ -105,7 +110,10 @@ def route_summary(rows: Iterable[dict]) -> List[dict]:
             "net_n": len(nets),
             "net_entered": len(entered) / len(nets) if nets else nan,
             "net_enter_s": float(np.median([r["net_enter_time"] for r in entered])) if entered else nan,
-            "efficiency": float(np.mean([min(1.0, r["route_hops"] / max(1, r["moveto_commands"])) for r in detours]))
+            "detour_n": len(need),
+            "detour_success": float(np.mean([r["success"] for r in need])) if need else nan,
+            "detour_self": len(self_led),
+            "efficiency": float(np.mean([min(1.0, r["route_hops"] / r["moveto_commands"]) for r in detours]))
             if detours else nan,
         })
     return out
