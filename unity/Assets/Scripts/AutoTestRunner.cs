@@ -27,6 +27,7 @@ namespace MosquitoSim
         static void ResetStatics()
         {
             Active = false;
+            MosquitoAgent.EpisodeLog = null;
             RoomArea.NetRouteFailures = RoomArea.NetLayouts = RoomArea.NetSideSwaps = RoomArea.NetFitFailures = 0;
             Args.Clear();
             s_Logs.Clear();
@@ -102,6 +103,10 @@ namespace MosquitoSim
             Application.runInBackground = true;
             Time.timeScale = F("time_scale", 1f);
             m_Out = Path.Combine(Dir, Arg("id", "run"));
+            // Every finished episode, one JSON line (route benchmark: python/evaluation/autotest_episodes.py)
+            Directory.CreateDirectory(m_Out);
+            m_Episodes = new StreamWriter(Path.Combine(m_Out, "episodes.jsonl"), false, new UTF8Encoding(false));
+            MosquitoAgent.EpisodeLog = line => m_Episodes?.WriteLine(line);
             Directory.CreateDirectory(m_Out);
             m_Rt = new RenderTexture(1280, 720, 24); // the pipeline does MSAA
             m_Tex = new Texture2D(1280, 720, TextureFormat.RGB24, false);
@@ -237,7 +242,7 @@ namespace MosquitoSim
                         bool clearBody = !Physics.Linecast(mp, tp - (tp - mp).normalized * Mathf.Min(0.1f, (tp - mp).magnitude),
                             NavGrid.Mask | (1 << Layers.Human), QueryTriggerInteraction.Ignore);
                         m_Trace.AppendLine(string.Format(k_Inv, "        모기장 안 {0}  열린 면 {1}  목표까지 직선(벽만) {2}  (사람 몸 포함) {3}  모기 {4}",
-                            room.net.Contains(mp) ? "O" : "X", room.net.OpenSide, clearWalls ? "O" : "X", clearBody ? "O" : "X", Vec(mp)));
+                            room.net.Inside(mp) ? "O" : "X", room.net.OpenSide, clearWalls ? "O" : "X", clearBody ? "O" : "X", Vec(mp)));
                     }
                     foreach (var ag in agents) CheckObs(ag);
                 }
@@ -356,8 +361,13 @@ namespace MosquitoSim
 
         static string Vec(Vector3 v) => string.Format(k_Inv, "({0:F1}, {1:F1}, {2:F1})", v.x, v.y, v.z);
 
+        StreamWriter m_Episodes;
+
         void Finish(string error)
         {
+            MosquitoAgent.EpisodeLog = null;
+            m_Episodes?.Dispose();
+            m_Episodes = null;
             var sb = new StringBuilder($"# 자동 테스트 리포트: {Path.GetFileName(m_Out)}\n");
             sb.AppendLine($"Unity {Application.unityVersion} / 화면 {Screen.width}x{Screen.height} / timeScale {Time.timeScale}");
             sb.Append("인자: ");

@@ -95,6 +95,8 @@ namespace MosquitoSim
         /// <summary>Auto-test report (training mode): learning episodes ended at a subgoal end / by a switch,
         /// and commands from the oracle rule vs at random.</summary>
         public static int SegEnds, SegInterrupts, RuleCommands, RandomCommands;
+        /// <summary>Auto tests: receives every episode_end record (the same JSON the planner channel gets).</summary>
+        public static System.Action<string> EpisodeLog;
         /// <summary>Auto-test report: route benchmark totals over finished episodes (11/25).</summary>
         public static int RouteEpisodes, RouteFound, RouteDirect, NetEpisodes, NetEntered,
             MoveToCmds, MoveToBlocked, ApproachCmds, ApproachBlocked;
@@ -246,7 +248,7 @@ namespace MosquitoSim
             bool hold = m_HideScenario && !m_ProbeValid;
             MotorStepResult r = hold ? default(MotorStepResult) : m_Motor.Step(action, dt, landing, m_P.LandingRadius, m_P.LandingSpeed);
             Vector3 pos = transform.position;
-            if (m_NetEnterTime < 0f && m_Area.net != null && m_Area.net.Enabled && m_Area.net.Contains(pos))
+            if (m_NetEnterTime < 0f && m_Area.net != null && m_Area.net.Enabled && m_Area.net.Inside(pos))
                 m_NetEnterTime = m_SimTime;
 
             if (r.HitTrap)
@@ -449,6 +451,7 @@ namespace MosquitoSim
 
         void Apply(PlannerCommand cmd, List<Candidate> snapshot, PlannerContext ctx)
         {
+            CountCommand(cmd, snapshot);
             SetCommand(cmd, snapshot);
             if (PlannerChannel.Instance != null && PlannerChannel.Instance.Log)
             {
@@ -548,6 +551,7 @@ namespace MosquitoSim
                 if (!PlannerCommand.TryFromDto(m.command, out PlannerCommand cmd)) continue;
                 m_Snapshots.TryGetValue(m.decision, out List<Candidate> snapshot);
                 if (!IsValidTarget(cmd, snapshot)) continue;
+                CountCommand(cmd, snapshot);
                 SetCommand(cmd, snapshot);
             }
         }
@@ -569,10 +573,12 @@ namespace MosquitoSim
             }
         }
 
-        void SetCommand(PlannerCommand cmd, List<Candidate> snapshot)
+        /// <summary>
+        /// Route benchmark: was a planner's command a straight flight from here when it was given? Called for
+        /// planner answers only, not for the placeholder APPROACH set at episode start.
+        /// </summary>
+        void CountCommand(PlannerCommand cmd, List<Candidate> snapshot)
         {
-            if (!m_Booting) EndSegment(true); // still running: the switch interrupts it
-            // Route benchmark: was the command a straight flight from here when it was given?
             if (cmd.Subgoal == Subgoal.MoveTo)
             {
                 m_MoveTos++;
@@ -586,6 +592,11 @@ namespace MosquitoSim
                 var sk = m_Area.human.SkinById(cmd.Target);
                 if (sk != null && !CandidatePoints.CanReachSkin(transform.position, sk)) m_ApproachBlocked++;
             }
+        }
+
+        void SetCommand(PlannerCommand cmd, List<Candidate> snapshot)
+        {
+            if (!m_Booting) EndSegment(true); // still running: the switch interrupts it
             if (cmd.Subgoal == Subgoal.Approach)
             {
                 var skin = m_Area.human.SkinById(cmd.Target);
@@ -644,7 +655,8 @@ namespace MosquitoSim
             stats.Add("Mosquito/Collisions", m_Collisions);
 
             var ch = PlannerChannel.Instance;
-            if (ch != null && ch.Configured)
+            bool toChannel = ch != null && ch.Configured;
+            if (toChannel || EpisodeLog != null)
             {
                 var j = new JsonBuilder();
                 j.BeginObject()
@@ -689,7 +701,9 @@ namespace MosquitoSim
                         .Key("probe_arrived").Value(m_ProbeArrived);
                 }
                 j.EndObject();
-                ch.Send(j.ToString());
+                string rec = j.ToString();
+                if (toChannel) ch.Send(rec);
+                EpisodeLog?.Invoke(rec);
             }
         }
 

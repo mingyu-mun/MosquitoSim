@@ -107,5 +107,16 @@ namespace MosquitoSim
             Vector3 l = transform.InverseTransformPoint(p);
             return Mathf.Abs(l.x) < Half + 0.05f && Mathf.Abs(l.z) < Half + 0.05f && l.y < NetHeight + 0.05f;
         }
+
+        /// <summary>
+        /// Strictly inside the net (route benchmark, 11/25). <see cref="Contains"/> has a 5 cm margin for keeping
+        /// spawns and candidates clear, so a mosquito pressed against the net from outside counted as inside.
+        /// </summary>
+        public bool Inside(Vector3 p)
+        {
+            if (!Enabled) return false;
+            Vector3 l = transform.InverseTransformPoint(p);
+            return Mathf.Abs(l.x) < Half - 0.01f && Mathf.Abs(l.z) < Half - 0.01f && l.y < NetHeight - 0.01f;
+        }
     }
 }

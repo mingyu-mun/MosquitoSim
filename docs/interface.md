@@ -237,7 +237,11 @@ VLM 호출은 Python 평가 루프(`evaluate.py`)가 맡습니다. Unity는 사�
 | `approach_commands` / `approach_blocked` | APPROACH 지시 수와, 지시한 순간 피부가 직선으로 막혀 있던 수 |
 | `net` / `net_enter_time` | 모기장 방인지, 모기장 안에 처음 들어간 시각(초, 못 들어가면 -1) |
 
-요약 열: `route_found`(경로가 있던 비율), `success_if_route`(그중 흡혈 성공), `moveto_blocked`·`approach_blocked`(막힌 지시 비율), `net_entered`·`net_enter_s`(모기장 방에서 들어간 비율과 걸린 시간 중앙값), `efficiency`(돌아가야 했던 성공 에피소드에서 최단 지점 수 ÷ 실제 MOVE_TO 수, 1이 최단).
+지시 수는 플래너가 낸 지시만 셉니다(에피소드 시작 때 첫 답이 오기 전 임시로 거는 APPROACH는 제외). Unity 플래너는 결정마다 지시를 다시 내므로 같은 지시도 결정 수만큼 셉니다. 모기장 진입은 그물 안쪽 1 cm 이내만 인정합니다(`NetObstacle.Inside`). 시작 위치·후보 배치에 쓰는 `Contains`는 5 cm 여유가 있어, 밖에서 그물에 붙은 모기도 안으로 셌던 문제를 11/25에 고쳤습니다.
+
+요약 열: `route_found`(경로가 있던 비율), `success_if_route`(그중 흡혈 성공), `moveto_blocked`·`approach_blocked`(막힌 지시 비율), `net_entered`·`net_enter_s`(모기장 방에서 들어간 비율과 걸린 시간 중앙값), `detour_success`(첫 결정 때 피부가 직선으로 보이지 않아 돌아가야 했던 에피소드의 성공률), `detour_self`(그 성공 중 MOVE_TO 없이 하위 정책이 스스로 길을 찾은 수), `efficiency`(MOVE_TO를 써서 돌아간 성공 에피소드에서 최단 지점 수 ÷ 실제 MOVE_TO 수, 1이 최단).
+
+자동 테스트는 `AutoTest/<id>/episodes.jsonl`에 에피소드 기록을 한 줄씩 남기고, `python -m evaluation.autotest_episodes <폴더>...`로 같은 요약을 냅니다.
 
 자동 테스트 리포트의 `[길찾기 지표]` 줄도 같은 값을 합산합니다. 에디터에서 Python 없이 마스킹 규칙을 비교할 수 있도록 `planner=5`(MaskedRule, `masked_rule.py`의 C# 사본)를 두었습니다. 본 평가는 Python의 `rule_masked`를 씁니다.
 
