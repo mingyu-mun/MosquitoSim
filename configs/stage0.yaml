@@ -67,3 +67,23 @@ environment_parameters:
         value: 2.0
       - name: final
         value: 3.0
+  # --- confirmed 11/25 (exp/stage0-mix): point subgoals from stage 0 ---
+  stage0_point_mix: 0.5     # half of the commands are MOVE_TO / HIDE to a free point of the empty room
+  feed_gate: 1.0            # no feeding while the subgoal is not APPROACH
+  hide_hold_reward: 0.1     # per second inside the hiding radius
+  hide_hold:
+    curriculum:
+      - name: l0
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.1}
+        value: 0.5
+      - name: l1
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.2}
+        value: 1.0
+      - name: l2
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.3}
+        value: 2.0
+      - name: l3
+        completion_criteria: {measure: progress, behavior: Mosquito, threshold: 0.4}
+        value: 3.5
+      - name: l4
+        value: 5.0

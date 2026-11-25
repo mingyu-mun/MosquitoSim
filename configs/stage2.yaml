@@ -32,10 +32,15 @@ environment_parameters:
   stage: 2.0
   env_split: 0.0            # train
   planner: 1.0              # random training planner
-  path_guide: 1.0           # MOVE_TO / HIDE follow an obstacle-free route (11/22)
+  path_guide: 1.0           # HIDE follows an obstacle-free route (11/22); MOVE_TO is a straight flight (11/25)
   time_penalty: 0.005
   landing_radius: 0.02      # final values of the stage 0 curriculum
   landing_speed: 0.3
   feed_time: 3.0
   prev_stage_mix: 0.2       # 20% of episodes use the previous stage
   bite_alert_chance: 0.25  # per second of feeding
+  # --- confirmed 11/25 (exp/stage0-mix, stage1_seg_rule50) ---
+  feed_gate: 1.0            # no feeding while the subgoal is not APPROACH
+  hide_hold_reward: 0.1     # per second inside the hiding radius
+  segment_episodes: 1.0     # achieved / timed out ends the learning episode; the room resets on feeding or after 60 s
+  rule_mix: 0.5             # share of commands chosen by the oracle rule planner; the rest are random

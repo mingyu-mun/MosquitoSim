@@ -82,19 +82,6 @@ namespace MosquitoSim
                 RuleMix = p.GetWithDefault("rule_mix", 0f),
                 ApproachTimePenalty = p.GetWithDefault("approach_time_penalty", 0f),
             };
-            if (e.Split != EnvSplit.Train)
-            {
-                // Evaluation always judges by the fixed rules.
-                e.FeedGate = false;
-                e.AchieveBonus = 0.3f;
-                e.HideHold = SubgoalConstants.HideHoldSeconds;
-                e.HideHoldReward = 0f;
-                e.MoveToRadius = SubgoalConstants.MoveToRadius;
-                e.Stage0PointMix = 0f;
-                e.SegmentEpisodes = false;
-                e.RuleMix = 0f;
-                e.ApproachTimePenalty = 0f;
-            }
             // Auto test (Editor Play without Python): the only place test arguments override parameters.
             if (SimSettings.ManualPlay)
             {
@@ -118,6 +105,26 @@ namespace MosquitoSim
                 e.ProbeSubgoal = Mathf.RoundToInt(AutoTestRunner.F("probe_subgoal", e.ProbeSubgoal));
                 e.HideScenario = AutoTestRunner.F("hide_scenario", e.HideScenario ? 1f : 0f) > 0.5f;
                 e.PathGuide = AutoTestRunner.F("path_guide", e.PathGuide ? 1f : 0f) > 0.5f;
+                // Training switches, so a training-mode auto test (env_split=0, planner=1) can check them.
+                e.FeedGate = AutoTestRunner.F("feed_gate", e.FeedGate ? 1f : 0f) > 0.5f;
+                e.HideHoldReward = AutoTestRunner.F("hide_hold_reward", e.HideHoldReward);
+                e.HideHold = AutoTestRunner.F("hide_hold", e.HideHold);
+                e.SegmentEpisodes = AutoTestRunner.F("segment_episodes", e.SegmentEpisodes ? 1f : 0f) > 0.5f;
+                e.RuleMix = AutoTestRunner.F("rule_mix", e.RuleMix);
+                e.Stage0PointMix = AutoTestRunner.F("stage0_point_mix", e.Stage0PointMix);
+            }
+            if (e.Split != EnvSplit.Train)
+            {
+                // Evaluation always judges by the fixed rules.
+                e.FeedGate = false;
+                e.AchieveBonus = 0.3f;
+                e.HideHold = SubgoalConstants.HideHoldSeconds;
+                e.HideHoldReward = 0f;
+                e.MoveToRadius = SubgoalConstants.MoveToRadius;
+                e.Stage0PointMix = 0f;
+                e.SegmentEpisodes = false;
+                e.RuleMix = 0f;
+                e.ApproachTimePenalty = 0f;
             }
             return e;
         }

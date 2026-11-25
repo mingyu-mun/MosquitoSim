@@ -34,7 +34,10 @@ CONDITION_ALIASES = {"rule": "rule_oracle"}  # runs before 11/22 called the orac
 NO_LATENCY_CONDITIONS = ("fixed", "rule_masked", "rule_oracle", "probe")
 # Extra episode_end fields: room shape for every run, probe results for probe runs.
 EPISODE_FIELDS = ("episode", "room", "stage", "success", "caught", "trapped", "timeout", "sim_time",
-                  "collisions", "decisions", "reward", "room_type", "layout")
+                  "collisions", "decisions", "reward", "room_type", "layout",
+                  # route benchmark (11/25)
+                  "route_hops", "moveto_commands", "moveto_blocked", "approach_commands", "approach_blocked",
+                  "net", "net_enter_time")
 PROBE_FIELDS = ("probe_subgoal", "probe_target", "probe_outcome", "probe_time", "probe_start_dist",
                 "probe_min_dist", "probe_path_blocked", "probe_target_height", "probe_target_hidden",
                 "probe_spotted", "probe_valid", "probe_wait", "probe_travel", "probe_arrived")

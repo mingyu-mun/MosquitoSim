@@ -38,6 +38,14 @@ def load_runs(root: Path) -> List[dict]:
                              "sim_time": float(r["sim_time"] or 0),
                              "room_type": r.get("room_type") or "",
                              "probe_subgoal": r.get("probe_subgoal") or "",
+                             # route benchmark (11/25); absent in older logs
+                             "route_hops": int(float(r["route_hops"])) if r.get("route_hops") not in (None, "") else None,
+                             "moveto_commands": int(float(r.get("moveto_commands") or 0)),
+                             "moveto_blocked": int(float(r.get("moveto_blocked") or 0)),
+                             "approach_commands": int(float(r.get("approach_commands") or 0)),
+                             "approach_blocked": int(float(r.get("approach_blocked") or 0)),
+                             "net": _bool(r.get("net")),
+                             "net_enter_time": float(r.get("net_enter_time") or -1),
                              "probe_outcome": r.get("probe_outcome") or "",
                              "probe_time": float(r.get("probe_time") or 0),
                              "probe_path_blocked": _bool(r.get("probe_path_blocked")),
@@ -60,6 +68,46 @@ def summarize(rows: Iterable[dict]) -> List[dict]:
         ok = [r["sim_time"] for r in rs if r["success"]]
         rec["time_to_feed"] = float(np.mean(ok)) if ok else float("nan")
         out.append(rec)
+    return out
+
+
+def route_summary(rows: Iterable[dict]) -> List[dict]:
+    """Route-finding benchmark per split x condition x latency (11/25).
+
+    route_found: a straight-leg route over the candidates existed at the first decision (route_hops >= 0);
+    success_if_route: feeding success among those episodes. moveto_blocked / approach_blocked: share of
+    commands that were not a straight flight when given (the planner sent the mosquito into a wall).
+    net_entered / net_enter_s: net rooms only. efficiency: shortest route hops / MOVE_TO commands used,
+    over successful episodes that needed a detour (1 = no extra hops).
+    """
+    groups: Dict[Tuple[str, str, str], List[dict]] = defaultdict(list)
+    for r in rows:
+        if r.get("route_hops") is None:
+            continue
+        groups[(r["split"], r["condition"], r["latency"])].append(r)
+    out = []
+    for (split, cond, lat), rs in sorted(groups.items()):
+        found = [r for r in rs if r["route_hops"] >= 0]
+        mt = sum(r["moveto_commands"] for r in rs)
+        ap = sum(r["approach_commands"] for r in rs)
+        nets = [r for r in rs if r["net"]]
+        entered = [r for r in nets if r["net_enter_time"] >= 0]
+        detours = [r for r in found if r["route_hops"] > 0 and r["success"]]
+        nan = float("nan")
+        out.append({
+            "split": split, "condition": cond, "latency": lat, "n": len(rs),
+            "success": float(np.mean([r["success"] for r in rs])),
+            "route_found": len(found) / len(rs),
+            "success_if_route": float(np.mean([r["success"] for r in found])) if found else nan,
+            "moveto_per_ep": mt / len(rs),
+            "moveto_blocked": sum(r["moveto_blocked"] for r in rs) / mt if mt else nan,
+            "approach_blocked": sum(r["approach_blocked"] for r in rs) / ap if ap else nan,
+            "net_n": len(nets),
+            "net_entered": len(entered) / len(nets) if nets else nan,
+            "net_enter_s": float(np.median([r["net_enter_time"] for r in entered])) if entered else nan,
+            "efficiency": float(np.mean([min(1.0, r["route_hops"] / max(1, r["moveto_commands"])) for r in detours]))
+            if detours else nan,
+        })
     return out
 
 
@@ -201,11 +249,24 @@ def main() -> int:
     ap.add_argument("--baseline", default="rule_masked")
     ap.add_argument("--metric", default="success", choices=OUTCOMES)
     ap.add_argument("--probe", action="store_true", help="summarize direct subgoal checks instead")
+    ap.add_argument("--route", action="store_true", help="route-finding benchmark (net rooms and detours)")
     args = ap.parse_args()
     rows = load_runs(Path(args.root))
     if not rows:
         print("no episodes.csv found", file=sys.stderr)
         return 1
+    if args.route:
+        rs = route_summary([r for r in rows if not is_check_run(r["condition"])])
+        if not rs:
+            print("no route fields found (logs before 11/25?)", file=sys.stderr)
+            return 1
+        print("split\tcondition\tlatency\tn\tsuccess\troute_found\tsuccess_if_route\tmoveto/ep\t"
+              "moveto_blocked\tapproach_blocked\tnet_entered(n)\tnet_enter_s\tefficiency")
+        for r in rs:
+            print(f"{r['split']}\t{r['condition']}\t{r['latency']}\t{r['n']}\t{r['success']:.3f}\t{r['route_found']:.3f}\t"
+                  f"{r['success_if_route']:.3f}\t{r['moveto_per_ep']:.2f}\t{r['moveto_blocked']:.3f}\t{r['approach_blocked']:.3f}\t"
+                  f"{r['net_entered']:.3f}({r['net_n']})\t{r['net_enter_s']:.1f}\t{r['efficiency']:.2f}")
+        return 0
     if args.probe:
         per_seed, overall = probe_summary(rows)
         if not per_seed:

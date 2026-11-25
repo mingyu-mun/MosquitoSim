@@ -122,8 +122,12 @@ namespace MosquitoSim
                 // Experiment (11/24): stage 0 already mixes point subgoals in the empty room, so the skin
                 // target and the subgoal target differ from the start and the subgoal has to be read.
                 if (c.Stage <= 0 && c.Candidates.Count > 0 && rng.NextDouble() < c.Stage0PointMix)
-                    return new PlannerCommand(rng.Next(2) == 0 ? Subgoal.MoveTo : Subgoal.Hide,
-                        c.Candidates[rng.Next(c.Candidates.Count)].Id);
+                {
+                    // MOVE_TO only to points in straight flight (11/25), like the stage 1+ planner.
+                    var reach = Reachable(c);
+                    if (rng.Next(2) == 0 && reach.Count > 0) return new PlannerCommand(Subgoal.MoveTo, reach[rng.Next(reach.Count)].Id);
+                    return new PlannerCommand(Subgoal.Hide, c.Candidates[rng.Next(c.Candidates.Count)].Id);
+                }
                 return new PlannerCommand(Subgoal.Approach, skins[rng.Next(skins.Count)].id);
             }
 
@@ -220,9 +224,54 @@ namespace MosquitoSim
         /// </summary>
         static Candidate? FirstHop(PlannerContext c, List<SkinZone> skins)
         {
+            int[] prev = Route(c, skins);
+            int g = prev.Length - 1;
+            if (prev[g] > 0)
+            {
+                int v = prev[g];
+                while (prev[v] != 0) v = prev[v];
+                if (c.Candidates[v - 1].Dist > SubgoalConstants.MoveToRadius) return c.Candidates[v - 1];
+            }
+            Candidate? best = null;
+            float bestD = float.MaxValue;
+            foreach (var s in skins) bestD = Mathf.Min(bestD, Vector3.Distance(c.MosquitoPos, s.Center));
+            foreach (var k in Reachable(c))
+                foreach (var s in skins)
+                {
+                    float d = Vector3.Distance(k.Pos, s.Center);
+                    if (d < bestD) { bestD = d; best = k; }
+                }
+            return best;
+        }
+
+        /// <summary>
+        /// Route-finding benchmark (11/25): candidate points on the shortest straight-leg route from the
+        /// mosquito to a point that sees an uncovered skin. 0 = a skin is a straight flight now, -1 = no route.
+        /// </summary>
+        public static int RouteHops(PlannerContext c)
+        {
+            var skins = new List<SkinZone>();
+            foreach (var s in c.Human.skins) if (!s.covered) skins.Add(s);
+            if (skins.Count == 0) return -1;
+            foreach (var s in skins) if (CandidatePoints.CanReachSkin(c.MosquitoPos, s)) return 0;
+            if (c.Candidates.Count == 0) return -1;
+            int[] prev = Route(c, skins);
+            int g = prev.Length - 1;
+            if (prev[g] <= 0) return -1;
+            int hops = 0;
+            for (int v = prev[g]; v != 0; v = prev[v]) hops++;
+            return hops;
+        }
+
+        /// <summary>
+        /// Dijkstra over the mosquito (node 0), the candidates (1..n) and a goal node ("a skin is a straight
+        /// flight from here"), every leg a straight flight. Returns the predecessor array; the goal is last.
+        /// </summary>
+        static int[] Route(PlannerContext c, List<SkinZone> skins)
+        {
             var nodes = new List<Vector3> { c.MosquitoPos };
             foreach (var k in c.Candidates) nodes.Add(k.Pos);
-            int n = nodes.Count + 1, g = n - 1; // g: "a skin is a straight flight from here"
+            int n = nodes.Count + 1, g = n - 1;
             var dist = new float[n];
             var prev = new int[n];
             var done = new bool[n];
@@ -257,22 +306,31 @@ namespace MosquitoSim
                     if (d < dist[v]) { dist[v] = d; prev[v] = u; }
                 }
             }
-            if (prev[g] > 0)
+            return prev;
+        }
+
+        /// <summary>
+        /// C# copy of the masked rule (python/mosquitosim/masked_rule.py) for Unity auto tests only, so the
+        /// route benchmark can run in the Editor without Python. Reads only the planner view; evaluation
+        /// uses the Python rule (condition rule_masked).
+        /// </summary>
+        public static PlannerCommand MaskedRule(PlannerView v)
+        {
+            if (v.Stage >= 2 && v.HandActive && v.HandDist < ThreatDistance) return new PlannerCommand(Subgoal.Evade, null);
+            if ((v.Stage >= 2 || v.Situation == "hide") && v.Alert && v.Candidates.Count > 0)
             {
-                int v = prev[g];
-                while (prev[v] != 0) v = prev[v];
-                if (c.Candidates[v - 1].Dist > SubgoalConstants.MoveToRadius) return c.Candidates[v - 1];
+                var far = v.Candidates[0];
+                foreach (var k in v.Candidates)
+                    if (k.HeadDist > far.HeadDist || (k.HeadDist == far.HeadDist && k.Dist < far.Dist)) far = k;
+                return new PlannerCommand(Subgoal.Hide, far.Id);
             }
-            Candidate? best = null;
-            float bestD = float.MaxValue;
-            foreach (var s in skins) bestD = Mathf.Min(bestD, Vector3.Distance(c.MosquitoPos, s.Center));
-            foreach (var k in Reachable(c))
-                foreach (var s in skins)
-                {
-                    float d = Vector3.Distance(k.Pos, s.Center);
-                    if (d < bestD) { bestD = d; best = k; }
-                }
-            return best;
+            PlannerView.Skin? near = null;
+            foreach (var s in v.Skins)
+                if (!s.Failed && (near == null || s.Dist < near.Value.Dist)) near = s;
+            if (near == null)
+                foreach (var s in v.Skins)
+                    if (near == null || s.Dist < near.Value.Dist) near = s;
+            return new PlannerCommand(Subgoal.Approach, near.Value.Id);
         }
 
         static Candidate? NearestCandidate(PlannerContext c, bool requireClearPath)
