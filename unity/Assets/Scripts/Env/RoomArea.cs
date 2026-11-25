@@ -110,7 +110,7 @@ namespace MosquitoSim
             hand.ResetHand(new System.Random(rng.Next()), p.FastHuman);
             if (cameras != null) cameras.PlaceOverview(this);
             Physics.SyncTransforms();
-            if (stage >= 1 || p.Planner == PlannerKind.External)
+            if (stage >= 1 || p.Planner == PlannerKind.External || p.Stage0PointMix > 0f)
             {
                 Candidates.BuildGrid(this);
                 Nav.Build(InnerBounds);
