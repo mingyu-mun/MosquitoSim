@@ -77,6 +77,13 @@ namespace MosquitoSim
         public float SimTime => m_SimTime;
         public Vector3 SubgoalTarget => m_Tracker.Target;
         /// <summary>Point the policy is steered to: a route waypoint for MOVE_TO / HIDE, else the target.</summary>
+        Vector3 EvadePoint(Vector3 pos)
+        {
+            Vector3 away = pos - m_Area.hand.Position;
+            if (away.sqrMagnitude < 1e-6f) away = Vector3.up;
+            return pos + away.normalized * SubgoalConstants.EvadeDistance;
+        }
+
         public Vector3 GuideTarget => m_Guide.Active ? m_Guide.Waypoint : m_Tracker.Target;
         readonly PathGuide m_Guide = new PathGuide();
         // MOVE_TO is a straight flight (11/25): routing round obstacles is the planner's job, so it is not guided.
@@ -200,7 +207,10 @@ namespace MosquitoSim
             {
                 Velocity = m_Motor.Velocity,
                 TargetSkinRel = (m_TargetSkin != null ? m_TargetSkin.Center : m_Tracker.Target) - pos,
-                SubgoalTargetRel = GuideTarget - pos,
+                // Experiment (11/26): EVADE shows a point 1.5 m straight away from the hand in the subgoal slot,
+                // so 'fly to the subgoal target' (what stages 0-1 teach) means escaping. Before, the slot held the
+                // hand itself and the stage 1 policy flew into the swat. The hand is still observed in hand_*.
+                SubgoalTargetRel = (m_Tracker.Command.Subgoal == Subgoal.Evade ? EvadePoint(pos) : GuideTarget) - pos,
                 HumanVelocity = dynamic ? human.Velocity : Vector3.zero,
                 HumanAlert = dynamic && human.Alert,
                 HandActive = dynamic && hand.Active,
