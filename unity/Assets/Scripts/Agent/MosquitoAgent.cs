@@ -71,12 +71,28 @@ namespace MosquitoSim
         Vector3 m_SoundPos;
         Subgoal m_ProbeSubgoal;
         string m_ProbeTarget, m_ProbeOutcome;
+        float m_ProbeTargetClear, m_ProbeMinClear; // 11/26 diag: free distance around the target / the mosquito at its closest
         float m_ProbeTime, m_ProbeStartDist, m_ProbeMinDist, m_ProbeHold, m_ProbeTargetHeight;
 
         public PlannerCommand CurrentCommand => m_Tracker.Command;
         public float SimTime => m_SimTime;
         public Vector3 SubgoalTarget => m_Tracker.Target;
         /// <summary>Point the policy is steered to: a route waypoint for MOVE_TO / HIDE, else the target.</summary>
+        /// <summary>11/26 diag: distance to the nearest obstacle surface (26 rays, up to 1 m).</summary>
+        static float Clearance(Vector3 p)
+        {
+            float best = 1f;
+            for (int x = -1; x <= 1; x++)
+            for (int y = -1; y <= 1; y++)
+            for (int z = -1; z <= 1; z++)
+            {
+                if (x == 0 && y == 0 && z == 0) continue;
+                Vector3 dir = new Vector3(x, y, z).normalized;
+                if (Physics.Raycast(p, dir, out RaycastHit h, best, NavGrid.Mask, QueryTriggerInteraction.Ignore)) best = h.distance;
+            }
+            return best;
+        }
+
         Vector3 EvadePoint(Vector3 pos)
         {
             Vector3 away = pos - m_Area.hand.Position;
@@ -157,6 +173,7 @@ namespace MosquitoSim
             m_P = EnvParams.Read();
             m_Tracker.HideHoldSeconds = m_P.HideHold;
             m_Tracker.MoveToRadius = m_P.MoveToRadius;
+            m_Tracker.HideRadius = m_P.HideRadius;
             m_EpisodeIndex++;
             m_Seed = m_P.IsTraining
                 ? unchecked(System.Environment.TickCount * 31 + m_Area.roomIndex * 7919 + m_EpisodeIndex)
@@ -270,7 +287,7 @@ namespace MosquitoSim
             }
             if (r.Collided)
             {
-                AddReward(-k_CollisionPenalty);
+                AddReward(-m_P.CollisionPenalty);
                 m_Collisions++;
             }
             AddReward(-m_P.TimePenalty * dt);
@@ -302,7 +319,7 @@ namespace MosquitoSim
             if (m_HideScenario && !m_ProbeDone)
             {
                 float d = Vector3.Distance(pos, m_Tracker.Target);
-                if (m_ProbeValid) m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, d);
+                if (m_ProbeValid && d < m_ProbeMinDist) { m_ProbeMinDist = d; m_ProbeMinClear = Clearance(pos); }
                 if (!m_Searching)
                 {
                     // The mosquito flies to its spot while the human stands still; the alert starts on arrival.
@@ -328,6 +345,7 @@ namespace MosquitoSim
             if (m_P.HideHoldReward > 0f && m_Tracker.Holding) AddReward(m_P.HideHoldReward * dt);
             bool hazard = m_Stage >= 2 && hand.Active;
             SubgoalStatus status = m_Tracker.Step(m_SimTime, dt, pos, m_Motor.IsLanded, hazard);
+            if (m_Tracker.JustEntered && m_P.HideArriveBonus > 0f) AddReward(m_P.HideArriveBonus);
             if (status != SubgoalStatus.Running && m_P.Planner == PlannerKind.Random)
             {
                 // Training progress per subgoal (TensorBoard). Mid-switched subgoals are not counted.
@@ -708,7 +726,9 @@ namespace MosquitoSim
                         .Key("probe_valid").Value(!m_HideScenario || m_ProbeValid)
                         .Key("probe_wait").Value(m_ProbeWait)
                         .Key("probe_travel").Value(m_ProbeTravel)
-                        .Key("probe_arrived").Value(m_ProbeArrived);
+                        .Key("probe_arrived").Value(m_ProbeArrived)
+                        .Key("probe_target_clear").Value(m_ProbeTargetClear)
+                        .Key("probe_min_clear").Value(m_ProbeMinClear);
                 }
                 j.EndObject();
                 string rec = j.ToString();
@@ -818,6 +838,8 @@ namespace MosquitoSim
             m_ProbeStarted = true;
             m_ProbeTarget = cmd.Target;
             m_ProbeStartDist = m_ProbeMinDist = Vector3.Distance(pos, m_Tracker.Target);
+            m_ProbeTargetClear = Clearance(m_Tracker.Target);
+            m_ProbeMinClear = Clearance(pos);
             // Same test as a MOVE_TO candidate's Reachable flag, so the two agree (11/25).
             m_ProbePathBlocked = cmd.Subgoal != Subgoal.Evade && !CandidatePoints.StraightClear(pos, m_Tracker.Target);
             m_ProbeTargetHeight = m_Tracker.Target.y - m_Area.human.transform.position.y;
@@ -835,7 +857,7 @@ namespace MosquitoSim
         bool JudgeProbe(float dt, Vector3 pos, SubgoalStatus status)
         {
             float d = Vector3.Distance(pos, m_Tracker.Target);
-            m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, d);
+            if (d < m_ProbeMinDist) { m_ProbeMinDist = d; m_ProbeMinClear = Clearance(pos); }
             string outcome = null;
             switch (m_ProbeSubgoal)
             {

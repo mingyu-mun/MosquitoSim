@@ -40,7 +40,8 @@ EPISODE_FIELDS = ("episode", "room", "stage", "success", "caught", "trapped", "t
                   "net", "net_enter_time")
 PROBE_FIELDS = ("probe_subgoal", "probe_target", "probe_outcome", "probe_time", "probe_start_dist",
                 "probe_min_dist", "probe_path_blocked", "probe_target_height", "probe_target_hidden",
-                "probe_spotted", "probe_valid", "probe_wait", "probe_travel", "probe_arrived")
+                "probe_spotted", "probe_valid", "probe_wait", "probe_travel", "probe_arrived",
+                "probe_target_clear", "probe_min_clear")
 _EPISODE_RE = re.compile(r"r(\d+)e(\d+)$")
 
 

@@ -23,6 +23,11 @@ namespace MosquitoSim
         /// <summary>HIDE hold time and MOVE_TO radius in use (training experiments can change them).</summary>
         public float HideHoldSeconds = SubgoalConstants.HideHoldSeconds;
         public float MoveToRadius = SubgoalConstants.MoveToRadius;
+        public float HideRadius = SubgoalConstants.HideRadius; // training experiment (11/26)
+
+        /// <summary>HIDE: true on the step the mosquito first enters the hiding radius under this command.</summary>
+        public bool JustEntered { get; private set; }
+        bool m_Entered;
 
         float m_Hold;
         float m_PrevDist;
@@ -34,6 +39,8 @@ namespace MosquitoSim
             StartTime = now;
             Ended = false;
             m_Hold = 0f;
+            m_Entered = false;
+            JustEntered = false;
             m_PrevDist = Vector3.Distance(mosquitoPos, target);
         }
 
@@ -55,6 +62,7 @@ namespace MosquitoSim
 
         public SubgoalStatus Step(float now, float dt, Vector3 pos, bool landed, bool hazardActive)
         {
+            JustEntered = false;
             if (Ended) return SubgoalStatus.Running;
             float d = Vector3.Distance(pos, Target);
             bool timedOut = now - StartTime > SubgoalConstants.TimeoutSeconds;
@@ -65,7 +73,8 @@ namespace MosquitoSim
                     if (landed) return SubgoalStatus.Running;
                     break;
                 case Subgoal.Hide:
-                    m_Hold = d <= SubgoalConstants.HideRadius ? m_Hold + dt : 0f;
+                    m_Hold = d <= HideRadius ? m_Hold + dt : 0f;
+                    if (m_Hold > 0f && !m_Entered) { m_Entered = true; JustEntered = true; }
                     if (m_Hold >= HideHoldSeconds) return End(SubgoalStatus.Achieved);
                     if (m_Hold > 0f) return SubgoalStatus.Running; // the 8 s limit is for getting there, not the hold
                     break;
