@@ -53,7 +53,7 @@
 
 1. 저장소를 받습니다. 경로에 한글이 없는 곳이면 됩니다.
    `git clone https://github.com/mingyu-mun/MosquitoSim.git C:\Users\zerat\Documents\MosquitoSim\Source\repos\MosquitoSim-git`
-2. `scripts\windows\4_vlm_setup.bat` 실행. Python 3.12·3.10이 없으면 winget으로 설치할지 묻습니다. 끝에 `RESULT OK`가 나와야 합니다.
+2. `scripts\windows\4_vlm_setup.bat` 실행. Python 3.12·3.10이 없으면 winget으로 설치합니다(묻지 않음). 끝에 `RESULT OK`가 나와야 합니다. PC 상태는 `logs_vlm\env.txt`, 전체 출력은 `logs_vlm\console.txt`에 남습니다. (`1_setup.bat`은 11/22 학습용 세팅이라 VLM과 무관합니다.)
 3. 파이프라인 확인(모델 없이): 창 하나에서 `5_vlm_server.bat mock`, 다른 창에서 `6_vlm_eval_editor.bat vlm`, 에디터에서 Play.
 4. 4B로: `5_vlm_server.bat`(로드와 예열에 1분 정도), 다시 `6_vlm_eval_editor.bat vlm`과 Play.
 
@@ -61,5 +61,8 @@ Unity 프로젝트는 지금 쓰는 위치(`...\repos\MosquitoSim\unity`)를 그
 
 ## 확인한 것
 
-- 클라우드 CPU에서 같은 백엔드 코드로 Qwen3-VL-2B 자체 점검 통과: 지시문만 4.5초, 이미지 5장 20.8초, 답 JSON 해석 1/1(11/25). GPU·4B 수치는 작업 PC 점검 뒤 적습니다.
+- **작업 PC 자체 점검(11/26, RTX 4070 SUPER, 드라이버 610.88, torch 2.11.0+cu128, transformers 5.24.1):** 4B BF16 로드 10.2초, VRAM 8.3 GB(호출 중 최대 9.4 GB). 한 번 호출(답 JSON 한 줄)은 지시문만 중앙값 0.75초(최대 0.76), 448 px 이미지 5장 포함 1.25초(최대 1.59). 10회 모두 JSON 해석 성공. 이미지는 단색 합성 이미지라 답의 내용은 의미 없음.
+- 에디터가 띄워져 있을 때 GPU 사용량이 약 2.4 GB라, 4B 최대 9.4 GB를 더하면 12 GB 중 약 11.8 GB입니다. 여유가 거의 없으니 평가 중에는 다른 GPU 프로그램을 끕니다. 부족하면 `--image-size 336`으로 이미지 토큰을 줄입니다.
+- 받는 양: CUDA torch 2.8 GB(약 5분), 모델 8.3 GB(약 14분).
+- 클라우드 CPU에서 같은 백엔드 코드로 Qwen3-VL-2B 자체 점검 통과(11/25).
 - transformers 5.24.1은 Python 3.11 이상이 필요해 mlagents(3.10)와 venv를 나눴습니다.
