@@ -1,7 +1,10 @@
-# VLM planner server (GPU machine). Separate from requirements.txt because
-# mlagents 1.1.0 pins old numpy/protobuf; run the server in its own venv.
-torch
-transformers>=4.57   # Qwen3-VL support
-accelerate
+# VLM planner server (11/25). Separate from requirements.txt because mlagents 1.1.0 needs Python 3.10
+# and pins old numpy/protobuf; transformers 5 needs Python >= 3.11. Use Python 3.12 in its own venv.
+# CUDA torch first (scripts/windows/vlm_setup.ps1 does this):
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# Checked 11/25: backend and self-test with transformers 5.24.1 (CPU, Qwen3-VL-2B).
+transformers==5.24.1   # Qwen3-VL support (4.57.0 was withdrawn; 4.57.1+ also works)
+accelerate==1.16.0
 pillow
-# vllm               # optional: `vllm serve <model>` + server.py --backend openai
+huggingface_hub
+# vllm               # optional, Linux/WSL2 only: `vllm serve <model>` + server.py --backend openai

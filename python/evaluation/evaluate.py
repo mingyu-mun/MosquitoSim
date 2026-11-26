@@ -95,7 +95,8 @@ def main() -> int:
     ap.add_argument("--planner-url", default="http://127.0.0.1:8008")
     ap.add_argument("--image-size", type=int, default=448)
     ap.add_argument("--out", default="results/eval")
-    ap.add_argument("--port", type=int, default=5105)
+    ap.add_argument("--port", type=int, default=None,
+                    help="default 5004 for the Editor (no --env, press Play after starting), 5105 for a build")
     ap.add_argument("--probe-subgoal", choices=list(PROBE_SUBGOALS), default="cycle",
                     help="--condition probe: the subgoal to check")
     ap.add_argument("--scenario", choices=("none", "hide"), default="none",
@@ -104,6 +105,8 @@ def main() -> int:
                     help="act with zeros instead of --policy (do-nothing baseline for the probe)")
     args = ap.parse_args()
 
+    if args.port is None:
+        args.port = 5105 if args.env else 5004  # the Editor always listens on 5004
     latency = LatencyMode.parse(args.latency)
     args.condition = CONDITION_ALIASES.get(args.condition, args.condition)
     if args.condition in NO_LATENCY_CONDITIONS and latency.kind != "measured":

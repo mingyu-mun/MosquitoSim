@@ -64,10 +64,18 @@ class PlannerHandler(BaseHTTPRequestHandler):
             self._send(500, {"error": repr(e)})
 
 
+WARMUP_INSTRUCTION = ("[과제] 사람에게 들키지 않고 피부에 착지해 흡혈하라.\n모기: 비행 중.\n피부: S1 얼굴 1.50m\n"
+                      "[출력] 다음 중 하나를 JSON으로:\n{\"subgoal\": \"APPROACH\", \"target\": \"S1~S5 중 하나\"}\n")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["mock", "transformers", "openai"], default="mock")
-    ap.add_argument("--model", default="Qwen/Qwen3-VL-8B-Instruct")
+    # 11/25: 4B BF16 (about 9 GB) fits a 12 GB GPU next to Unity; 8B BF16 (about 17 GB) does not.
+    # A local folder (models/Qwen3-VL-4B-Instruct) works as well as a Hub id.
+    ap.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
+    ap.add_argument("--warmup", type=int, default=2,
+                    help="calls before serving, so CUDA start-up is not counted in the first measured latency")
     ap.add_argument("--openai-url", default="http://127.0.0.1:8000/v1")
     ap.add_argument("--mock-delay", type=float, default=0.0)
     ap.add_argument("--dtype", default="bfloat16")
@@ -76,6 +84,10 @@ def main() -> int:
     args = ap.parse_args()
 
     PlannerHandler.backend = make_backend(args)
+    for _ in range(args.warmup if args.backend != "mock" else 0):
+        PlannerHandler.backend.generate(WARMUP_INSTRUCTION, [], False)
+    if hasattr(PlannerHandler.backend, "memory"):
+        print(f"model {args.model}: {PlannerHandler.backend.memory()}")
     server = ThreadingHTTPServer((args.host, args.port), PlannerHandler)
     print(f"planner server: {args.backend} {args.model} on http://{args.host}:{args.port}")
     try:

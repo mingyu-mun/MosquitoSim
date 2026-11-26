@@ -28,12 +28,18 @@ summaries/
 __pycache__/
 *.pyc
 .venv/
+.venv-planner/
 venv/
 .pytest_cache/
 
 # Planner logs and replay data (large; share separately)
 logs/
 replay/
+logs_vlm/
+logs_setup/
+
+# VLM weights (downloaded by scripts/windows/vlm_setup.ps1)
+models/
 
 # OS
 .DS_Store
