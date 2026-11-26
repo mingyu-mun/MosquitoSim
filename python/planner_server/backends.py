@@ -52,9 +52,21 @@ class TransformersBackend:
         self.torch = torch
         self.model = model
         torch_dtype = "auto" if dtype == "auto" else getattr(torch, dtype)
-        self.net = AutoModelForImageTextToText.from_pretrained(model, torch_dtype=torch_dtype, device_map="auto")
+        # transformers >= 5 calls the argument dtype; 4.x calls it torch_dtype
+        try:
+            self.net = AutoModelForImageTextToText.from_pretrained(model, dtype=torch_dtype, device_map="auto")
+        except TypeError:
+            self.net = AutoModelForImageTextToText.from_pretrained(model, torch_dtype=torch_dtype, device_map="auto")
         self.processor = AutoProcessor.from_pretrained(model)
         self.net.eval()
+
+    def memory(self) -> str:
+        """GPU memory in use, for the server log and the self-test."""
+        if not self.torch.cuda.is_available():
+            return "cpu"
+        gb = 1024 ** 3
+        return (f"{self.torch.cuda.get_device_name(0)}: allocated {self.torch.cuda.memory_allocated() / gb:.1f} GB, "
+                f"peak {self.torch.cuda.max_memory_allocated() / gb:.1f} GB")
 
     def generate(self, instruction: str, images: Sequence[str], use_images: bool) -> str:
         messages = chat_messages(instruction, images, use_images)

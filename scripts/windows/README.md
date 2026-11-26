@@ -38,3 +38,28 @@
 | 1단계 300만 스텝 | 10분 23초 (약 4,800 steps/s) |
 
 외부 에셋을 넣은 빌드에서는 값이 달라질 수 있습니다.
+
+# VLM 플래너 세팅 (11/25)
+
+작업 PC(RTX 4070 SUPER 12 GB)에서 Unity 에디터와 VLM 플래너를 같이 돌리는 절차입니다. 모델은 **Qwen3-VL-4B-Instruct(BF16)** 입니다. 8B(BF16)는 약 17 GB라 12 GB GPU에 올라가지 않고, 평가 중에는 Unity도 같은 GPU를 씁니다.
+
+| 파일 | 하는 일 |
+| --- | --- |
+| `4_vlm_setup.bat` → `vlm_setup.ps1` | GPU 확인, `.venv-planner`(Python 3.12, CUDA torch 2.11 + transformers 5.24.1), `.venv`(Python 3.10, mlagents, 평가 코드) 만들기, 모델 받기(`models\Qwen3-VL-4B-Instruct`, 약 9 GB), GPU 자체 점검. 기록은 `logs_vlm\setup_report.txt`, `logs_vlm\selftest.txt` |
+| `5_vlm_server.bat [mock]` | 플래너 서버(`http://127.0.0.1:8008`). 인자 없이 4B, `mock`이면 모델 없이 가장 가까운 피부로 APPROACH |
+| `6_vlm_eval_editor.bat [조건 분할 단계 에피소드 정책]` | 빌드 없이 Unity 에디터에 붙어 짧게 평가. 실행 후 60초 안에 에디터에서 Play. 결과는 `results\vlm_check\` |
+
+## 순서
+
+1. 저장소를 받습니다. 경로에 한글이 없는 곳이면 됩니다.
+   `git clone https://github.com/mingyu-mun/MosquitoSim.git C:\Users\zerat\Documents\MosquitoSim\Source\repos\MosquitoSim-git`
+2. `scripts\windows\4_vlm_setup.bat` 실행. Python 3.12·3.10이 없으면 winget으로 설치할지 묻습니다. 끝에 `RESULT OK`가 나와야 합니다.
+3. 파이프라인 확인(모델 없이): 창 하나에서 `5_vlm_server.bat mock`, 다른 창에서 `6_vlm_eval_editor.bat vlm`, 에디터에서 Play.
+4. 4B로: `5_vlm_server.bat`(로드와 예열에 1분 정도), 다시 `6_vlm_eval_editor.bat vlm`과 Play.
+
+Unity 프로젝트는 지금 쓰는 위치(`...\repos\MosquitoSim\unity`)를 그대로 엽니다. 받은 저장소는 Python 코드와 정책 파일을 쓰는 용도입니다.
+
+## 확인한 것
+
+- 클라우드 CPU에서 같은 백엔드 코드로 Qwen3-VL-2B 자체 점검 통과: 지시문만 4.5초, 이미지 5장 20.8초, 답 JSON 해석 1/1(11/25). GPU·4B 수치는 작업 PC 점검 뒤 적습니다.
+- transformers 5.24.1은 Python 3.11 이상이 필요해 mlagents(3.10)와 venv를 나눴습니다.

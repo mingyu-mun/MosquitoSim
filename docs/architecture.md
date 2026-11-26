@@ -159,7 +159,7 @@ TensorBoard에서 `Mosquito/Success`, `Mosquito/Caught`, `Mosquito/Trapped`, `Mo
 
 ```bash
 # VLM 서버 (GPU 기기, 별도 venv)
-python python/planner_server/server.py --backend transformers --model Qwen/Qwen3-VL-8B-Instruct
+python python/planner_server/server.py --backend transformers --model Qwen/Qwen3-VL-4B-Instruct   # 11/25: 12 GB GPU에 맞춰 4B BF16. Windows 절차는 scripts/windows/README.md
 
 # 2단계 끝, 새 물체, 네 조건
 for c in fixed rule_masked rule_oracle vlm vlm_noimg; do
