@@ -77,7 +77,6 @@ namespace MosquitoSim
         public PlannerCommand CurrentCommand => m_Tracker.Command;
         public float SimTime => m_SimTime;
         public Vector3 SubgoalTarget => m_Tracker.Target;
-        /// <summary>Point the policy is steered to: a route waypoint for MOVE_TO / HIDE, else the target.</summary>
         /// <summary>11/26 diag: distance to the nearest obstacle surface (26 rays, up to 1 m).</summary>
         static float Clearance(Vector3 p)
         {
@@ -100,6 +99,7 @@ namespace MosquitoSim
             return pos + away.normalized * SubgoalConstants.EvadeDistance;
         }
 
+        /// <summary>Point the policy is steered to: a route waypoint for HIDE, else the target.</summary>
         public Vector3 GuideTarget => m_Guide.Active ? m_Guide.Waypoint : m_Tracker.Target;
         readonly PathGuide m_Guide = new PathGuide();
         // MOVE_TO is a straight flight (11/25): routing round obstacles is the planner's job, so it is not guided.

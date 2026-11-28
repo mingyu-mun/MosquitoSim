@@ -23,13 +23,13 @@
 | 0 | 3 | self_velocity | 속도 / 1.5 | |
 | 3 | 3 | target_skin_rel_pos | (목표 피부 영역 중심 − 모기) / 5, [−1, 1]로 자름 | |
 | 6 | 1 | target_skin_dist | 거리 / 5, 최대 1 | |
-| 7 | 3 | subgoal_target_rel_pos | (서브골 목표 지점 − 모기) / 5. HIDE는 우회 경로의 경유점(아래 "우회 경로"), MOVE_TO는 목표 그대로(직선 비행) | |
+| 7 | 3 | subgoal_target_rel_pos | (서브골 목표 지점 − 모기) / 5. HIDE는 우회 경로의 경유점(아래 "우회 경로"), MOVE_TO는 목표 그대로(직선 비행), EVADE는 손에서 정반대로 1.5 m 떨어진 탈출점(11/26, 손 위치는 `hand_*`) | |
 | 10 | 1 | subgoal_target_dist | 거리 / 5 | |
 | 11 | 3 | human_velocity | 사람 속도 / 2 | 0~1단계 |
 | 14 | 1 | human_alert | 경계 0/1 | 0~1단계 |
 | 15 | 3 | hand_rel_pos | (손 − 모기) / 5 | 0~1단계 |
 | 18 | 3 | hand_velocity | 손 속도 / 8 | 0~1단계 |
-| 21 | 1 | hand_active | 0/1 | 0~1단계 |
+| 21 | 1 | hand_active | 0/1. 경계 대가(`alert_lethal`)가 켜져 있으면 휘두르는 동안만 1(준비 동작은 0, 11/28) | 0~1단계 |
 | 22 | 3 | hazard_rel_pos | (위험 지점 − 모기) / 5 | 위험 없음 |
 | 25 | 1 | hazard_active | 0/1 | 위험 없음 |
 | 26 | 1 | hazard_exposure | 누적 노출 / 한도 | 위험 없음 |
@@ -207,7 +207,7 @@ HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅�
 |---|---|---|
 | Python → Unity | config | image_dir, log, capture_images, image_size. 받기 전에는 Unity가 아무것도 보내지 않음 |
 | Python → Unity | command | room, episode, decision, command. 다른 에피소드의 지시는 무시 |
-| Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command |
+| Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command(무작위 피부), nearest_command(가까운 피부) |
 | Unity → Python | decision | request와 같은 필드 + command (Unity 안 플래너의 로그) |
 | Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 길찾기 지표(route_hops·moveto_commands·moveto_blocked·approach_commands·approach_blocked·net·net_enter_time), 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait·probe_travel·probe_arrived |
 

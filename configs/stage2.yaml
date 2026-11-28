@@ -44,3 +44,6 @@ environment_parameters:
   hide_hold_reward: 0.1     # per second inside the hiding radius
   segment_episodes: 1.0     # achieved / timed out ends the learning episode; the room resets on feeding or after 60 s
   rule_mix: 0.5             # share of commands chosen by the oracle rule planner; the rest are random
+  # --- confirmed 11/28 (results/stage2-collision, all four subgoals >= 80%) ---
+  collision_penalty: 0.001  # per collision step (default 0.01); tight hiding spots near furniture
+  # The human's costly alert (alert_lethal), the 2.5 m start and the hidden wind-up are code defaults (11/28).

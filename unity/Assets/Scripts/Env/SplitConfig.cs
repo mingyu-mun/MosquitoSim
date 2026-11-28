@@ -52,14 +52,14 @@ namespace MosquitoSim
         public float ApproachTimePenalty; // extra time penalty per second while APPROACH has not landed yet (11/24)
         public bool SegmentEpisodes;   // training: one subgoal = one learning episode, the world carries on (11/24)
         public float RuleMix;          // training: share of commands chosen by the oracle rule planner instead of at random
-        public float Stage0PointMix;
+        public float Stage0PointMix;    // stage 0: share of commands that are MOVE_TO / HIDE to a free point (11/24)
         public float HideRadius;        // HIDE: radius used by training (11/26; evaluation always 0.15 m)
         public float HideArriveBonus;   // HIDE: one-off reward on first entering the radius (11/26)
         public int OracleVariant;
         public bool AlertLethal;        // 11/28: see HumanController.Lethal (default on)
         public bool StrictHuman;        // 11/28: see HumanController.Strict (option, default off)
         public float SpawnMinDist;      // 11/28: the mosquito starts at least this far (horizontal) from the human       // evaluation option (11/28): Planners.OracleVariant
-        public float CollisionPenalty;  // per collision step (11/26; default 0.01)   // stage 0: share of commands that are MOVE_TO / HIDE to a free point (11/24)
+        public float CollisionPenalty;  // per collision step (11/26; default 0.01)
 
         public static EnvParams Read()
         {
