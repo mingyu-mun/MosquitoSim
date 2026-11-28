@@ -23,13 +23,13 @@
 | 0 | 3 | self_velocity | 속도 / 1.5 | |
 | 3 | 3 | target_skin_rel_pos | (목표 피부 영역 중심 − 모기) / 5, [−1, 1]로 자름 | |
 | 6 | 1 | target_skin_dist | 거리 / 5, 최대 1 | |
-| 7 | 3 | subgoal_target_rel_pos | (서브골 목표 지점 − 모기) / 5. HIDE는 우회 경로의 경유점(아래 "우회 경로"), MOVE_TO는 목표 그대로(직선 비행) | |
+| 7 | 3 | subgoal_target_rel_pos | (서브골 목표 지점 − 모기) / 5. HIDE는 우회 경로의 경유점(아래 "우회 경로"), MOVE_TO는 목표 그대로(직선 비행), EVADE는 손에서 정반대로 1.5 m 떨어진 탈출점(11/26, 손 위치는 `hand_*`) | |
 | 10 | 1 | subgoal_target_dist | 거리 / 5 | |
 | 11 | 3 | human_velocity | 사람 속도 / 2 | 0~1단계 |
 | 14 | 1 | human_alert | 경계 0/1 | 0~1단계 |
 | 15 | 3 | hand_rel_pos | (손 − 모기) / 5 | 0~1단계 |
 | 18 | 3 | hand_velocity | 손 속도 / 8 | 0~1단계 |
-| 21 | 1 | hand_active | 0/1 | 0~1단계 |
+| 21 | 1 | hand_active | 0/1. 경계 대가(`alert_lethal`)가 켜져 있으면 휘두르는 동안만 1(준비 동작은 0, 11/28) | 0~1단계 |
 | 22 | 3 | hazard_rel_pos | (위험 지점 − 모기) / 5 | 위험 없음 |
 | 25 | 1 | hazard_active | 0/1 | 위험 없음 |
 | 26 | 1 | hazard_exposure | 누적 노출 / 한도 | 위험 없음 |
@@ -57,11 +57,13 @@
 - **후보 지점:** 리셋 때 빈 공간에 0.25m 격자를 만들고, 결정마다 8개를 뽑아 P1~P8로 번호를 붙입니다. 4개는 사람 머리에서 가려진 지점, 4개는 방 곳곳에 퍼진 지점(가장 먼 점 샘플링), 서로 0.5m 이상. 모기장 평가에서는 네 면 바깥 0.3m에 하나씩 반드시 포함하고 열린 면도 똑같이 다룹니다. 번호 순서는 평가 시드로 섞습니다.
 - **표시:** ID를 전경·모기 시점 이미지에 덧그립니다(Set-of-Mark). 지시문에는 ID와 모기로부터의 거리만.
 - **조건별 정보(11/22 확정):** 정보는 "플래너 뷰"(`PlannerView`, 요청의 `view`)로 정합니다. 뷰에는 경계 여부(남은 시간 없음), 손의 활성·거리·다가오는 속도, 착지·흡혈 진행, 피부 ID·이름·모기로부터의 거리, 후보 ID와 후보마다 모기로부터의 거리·사람 머리로부터의 거리·바닥에서의 높이, 직전 지시만 들어갑니다. VLM 지시문은 이 뷰에서만 만듭니다.
+  - `fixed`(하한, 11/28 변경): 에피소드마다 피부 하나를 에피소드 시드로 무작위로 정해 APPROACH(시간 초과되면 그 에피소드의 무작위 순서에서 다음 피부). 피부 고르기도 플래너의 몫으로 보기 때문입니다. 모든 조건은 첫 답이 오기 전에 이 지시로 시작합니다.
+  - `nearest`(참고): 가장 가까운 피부로 APPROACH. 11/28 이전의 `fixed`입니다.
   - `rule_masked`: 뷰만 읽는 규칙(`python/mosquitosim/masked_rule.py`). VLM과 같은 정보에서 손으로 짠 규칙과 비교하는 기준선입니다.
   - `vlm_noimg`: 뷰로 만든 지시문만. `vlm`: 지시문 + 이미지 5장.
   - `rule_oracle`: 후보마다 가려짐 여부, 사람까지 직선 열림, 장면 기하를 정확히 받는 규칙(Unity `Planners.Rule`). 비교 상대가 아니라 숨을 곳을 완벽히 고를 때의 상한 참고입니다.
 - **마스킹 규칙(`rule_masked`):** 손이 움직이고 1m 안이면 EVADE → 경계 중이면 사람 머리에서 가장 먼 후보로 HIDE(같으면 모기에서 가까운 것. 가려짐은 모름) → 그 외 가장 가까운 피부로 APPROACH. 길이 막혔는지 알 수 없으므로 MOVE_TO는 고르지 않습니다.
-- **정답 규칙(`rule_oracle`):** 손이 1m 안에서 다가오면 EVADE → 경계 중이면 가장 가까운 가려진 후보로 HIDE(없으면 시선 반대쪽 가장 가까운 후보) → 목표 피부로의 직선이 막혔으면 모기에서 직선으로 갈 수 있고 사람까지 직선이 열린 가장 가까운 후보로 MOVE_TO(둘 다 만족하는 후보가 없으면 사람까지만 열린 후보) → 그 외 손에서 가장 먼 피부로 APPROACH(접근이 시간 초과된 피부는 그 에피소드에서 제외). 규칙은 학습 환경 기준으로 만든 뒤 고치지 않습니다. 2단계 새 물체 평가의 단서 물체(피부 덮개, 끈끈이 트랩)는 규칙 입력에 들어가지 않습니다.
+- **정답 규칙(`rule_oracle`):** 손이 1m 안에서 다가오면 EVADE → 경계 중이면 가장 가까운 가려진 후보로 HIDE(없으면 시선 반대쪽 가장 가까운 후보) → 목표 피부로의 직선이 막혔으면 모기에서 직선으로 갈 수 있고 사람까지 직선이 열린 가장 가까운 후보로 MOVE_TO(둘 다 만족하는 후보가 없으면 사람까지만 열린 후보) → 그 외 손에서 가장 먼 피부로 APPROACH(접근이 시간 초과된 피부는 그 에피소드에서 제외). **11/28 수정(A+B, 평가 기본값 `oracle_variant=2`):** 2단계에서 원래 규칙은 손에서 가장 먼 피부로 주로 얼굴(S1)을 골라, 다가가면 날갯소리로 사람이 경계하고 다시 숨는 반복에 빠졌습니다(2단계 정책 s1, 일반 방 66 %, 모기장 방 27 %·잡힘 64 %, 고정 플래너보다 낮음). 그래서 A: 2단계에서 머리 반경(0.5 m) 안의 피부는 다른 피부가 남아 있으면 고르지 않고, B: 경계 중이어도 사람이 지금 모기를 보고 있을 때만 HIDE하고, 한 번 숨으면 경계가 끝날 때까지 숨습니다(안 보이면 계속 흡혈). 수정 뒤 같은 에피소드에서 일반 방 99 %, 모기장 방 87 %. 학습의 규칙 혼합(`rule_mix`)은 원래 규칙(`oracle_variant=0`)을 그대로 씁니다. 이 수정 외에는 학습 환경 기준으로 만든 뒤 고치지 않습니다. 2단계 새 물체 평가의 단서 물체(피부 덮개, 끈끈이 트랩)는 규칙 입력에 들어가지 않습니다.
 - **무효:** 없는 서브골, 이번 결정에 제시되지 않은 ID, 필요한 대상 누락. EVADE의 대상은 무시.
 
 ## 서브골
@@ -205,7 +207,7 @@ HIDE는 숨을 곳 선택(플래너)과 실행(하위 정책)을 한 번에 봅�
 |---|---|---|
 | Python → Unity | config | image_dir, log, capture_images, image_size. 받기 전에는 Unity가 아무것도 보내지 않음 |
 | Python → Unity | command | room, episode, decision, command. 다른 에피소드의 지시는 무시 |
-| Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command |
+| Unity → Python | request | room, episode, decision, sim_time, stage, events, current_command, landed, alert, hand_active, skins[], candidates[], view, instruction, images[](VLM일 때), rule_command(정답 규칙), fixed_command(무작위 피부), nearest_command(가까운 피부) |
 | Unity → Python | decision | request와 같은 필드 + command (Unity 안 플래너의 로그) |
 | Unity → Python | episode_end | room, episode, success, caught, trapped, timeout, sim_time, collisions, decisions, reward, room_type, layout, 길찾기 지표(route_hops·moveto_commands·moveto_blocked·approach_commands·approach_blocked·net·net_enter_time), 점검이면 probe_subgoal·probe_target·probe_outcome·probe_time·probe_start_dist·probe_min_dist·probe_path_blocked·probe_target_height·probe_target_hidden·probe_spotted·probe_valid·probe_wait·probe_travel·probe_arrived |
 
@@ -246,3 +248,13 @@ VLM 호출은 Python 평가 루프(`evaluate.py`)가 맡습니다. Unity는 사�
 자동 테스트 리포트의 `[길찾기 지표]` 줄도 같은 값을 합산합니다. 에디터에서 Python 없이 마스킹 규칙을 비교할 수 있도록 `planner=5`(MaskedRule, `masked_rule.py`의 C# 사본)를 두었습니다. 본 평가는 Python의 `rule_masked`를 씁니다.
 
 플래너 입력의 피부 목록에는 `failed`가 붙습니다. 이번 에피소드에 APPROACH가 시간 안에 닿지 못해 제외된 피부이고, 글 설명에는 "(착지 실패)"로 나옵니다. 마스킹 규칙은 이 피부를 건너뜁니다.
+
+## 2단계 사람 반응과 평가 설정 (11/28)
+
+- **경계의 대가(`alert_lethal`, 기본 켬):** 평상시 사람은 이전과 같습니다(멀리서 알아채지 않음). 날갯소리나 물림으로 경계가 시작되면 먼저 1초 동안 소리 난 쪽이나 물린 곳으로 돌아서며 아무것도 보지 못합니다. 그 뒤 물렸으면 물린 곳을 보고 모기가 그대로 있으면 손이 날아옵니다(다리 포함 자기 몸 어디든). 경계 중 보이면 손이 빠르게 반복해서 칩니다: 반응 0.15~0.3초, 6~8 m/s, 닿는 거리 1.2 m, 0.4초마다 다시, 보이는 동안 모기를 따라감. 1초 안에 숨으면 삽니다.
+- **손 준비 동작은 하위 정책 관측에 보이지 않음(`alert_lethal`일 때):** `hand_active`는 휘두르는 동안만 1입니다. 미리 보이면 하위 정책이 반사적으로 피해 플래너의 HIDE가 필요 없어졌습니다.
+- **즉시 결정:** 경계 시작(`alert_start`)과 손 움직임(`hand_active`)은 1초 결정 간격을 기다리지 않습니다.
+- **시작 거리:** 모기는 사람에게서 수평 2.5 m 이상에서 시작합니다(자리가 없으면 0.25 m씩 줄임, 최소 1 m). 가까이서 시작해 곧장 머리로 가는 비정상 접근이 그대로 성공하던 문제 때문입니다.
+- **강한 사람(`human_strict`, 기본 끔):** 평상시에도 2 m 안 시야의 모기를 알아채는 설정. 시험 결과(2단계, 흡혈 1초 조건) 규칙 플래너가 숨는 도중 들켜 무작위 피부보다 낮아 쓰지 않습니다.
+- **물림 타이머 수정:** 착지가 잠깐 떴다 앉는 동안 물림 타이머가 계속 0으로 돌아가 물림 경계가 거의 없던 문제를 고쳤습니다(0.5초 넘게 떨어져야 초기화).
+- **자동 테스트 평가 값:** 에디터 자동 테스트가 평가 분할에서도 0단계 학습 초기값(흡혈 1초, 착지 6 cm·0.6 m/s)을 쓰고 있었습니다. 이제 `evaluate.py`와 같은 3초, 2 cm, 0.3 m/s를 씁니다. 11/28 오후까지의 에디터 플래너 비교는 1초 조건입니다.

@@ -16,6 +16,8 @@ namespace MosquitoSim
         public HandController Hand;
         public List<Candidate> Candidates;
         public HashSet<string> ExcludedSkins;
+        /// <summary>This episode's random skin order (from the episode seed): the fixed planner's choice (11/28).</summary>
+        public List<string> SkinOrder;
         public PlannerCommand Current;
         /// <summary>HIDE scenario before the choice: the human is about to look around.</summary>
         public bool HideSituation;
@@ -42,7 +44,95 @@ namespace MosquitoSim
         public const float ThreatDistance = 1.0f;
 
         /// <summary>Baseline: APPROACH the nearest allowed skin.</summary>
+        /// <summary>
+        /// Fixed planner = lower reference (11/28): APPROACH one skin drawn at random per episode from the episode
+        /// seed, so choosing the skin is left entirely to the planners being compared. A skin whose APPROACH timed
+        /// out is dropped and the next one in the episode's random order is used. Also the placeholder command
+        /// every condition starts with until the first answer arrives.
+        /// </summary>
         public static PlannerCommand Fixed(PlannerContext c)
+        {
+            if (c.SkinOrder == null || c.SkinOrder.Count == 0) return NearestSkin(c);
+            foreach (string id in c.SkinOrder)
+                if (c.ExcludedSkins == null || !c.ExcludedSkins.Contains(id)) return new PlannerCommand(Subgoal.Approach, id);
+            c.ExcludedSkins?.Clear();
+            return new PlannerCommand(Subgoal.Approach, c.SkinOrder[0]);
+        }
+
+        /// <summary>
+        /// Oracle rule C (11/28, oracle_variant=3, stricter human): EVADE as soon as the hand moves; hide only when
+        /// seen (as B); prefer skins the hand cannot reach and the human does not see; approach along a line the
+        /// human would not notice, going first to an unnoticed candidate point if the direct line is noticed.
+        /// </summary>
+        static PlannerCommand RuleC(PlannerContext c)
+        {
+            var h = c.Human;
+            if (c.Hand.Active) return new PlannerCommand(Subgoal.Evade, null);
+            if (c.AlertKnown && (h.Spotted || c.Current.Subgoal == Subgoal.Hide) && c.Candidates.Count > 0)
+            {
+                Candidate? best = null;
+                foreach (var k in c.Candidates)
+                    if (k.Reachable && k.Hidden && (best == null || k.Dist < best.Value.Dist)) best = k;
+                if (best == null)
+                    foreach (var k in c.Candidates)
+                        if (k.Reachable && !h.WouldNotice(k.Pos) && (best == null || k.Dist < best.Value.Dist)) best = k;
+                if (best != null) return new PlannerCommand(Subgoal.Hide, best.Value.Id);
+            }
+            // Feeding unseen: stay.
+            if (c.Landed && c.Current.Subgoal == Subgoal.Approach && !h.Spotted) return c.Current;
+
+            var allowed = new List<SkinZone>(c.AllowedSkins());
+            if (allowed.Count == 0) { c.ExcludedSkins?.Clear(); allowed.AddRange(h.skins); }
+            Vector3 shoulder = c.Hand.Shoulder;
+            System.Func<SkinZone, int> Score = s =>
+                (Vector3.Distance(s.Center, shoulder) < HandController.Reach ? 2 : 0) + (h.WouldNotice(s.Center) ? 1 : 0);
+            allowed.Sort((a, b) =>
+            {
+                int d = Score(a).CompareTo(Score(b));
+                return d != 0 ? d : Vector3.Distance(a.Center, c.MosquitoPos).CompareTo(Vector3.Distance(b.Center, c.MosquitoPos));
+            });
+            foreach (var s in allowed)
+            {
+                if (CandidatePoints.CanReachSkin(c.MosquitoPos, s) && !PathNoticed(h, c.MosquitoPos, s.Center))
+                    return new PlannerCommand(Subgoal.Approach, s.id);
+                // One unnoticed stop on the way: reachable, unnoticed there and on both legs, the skin in a straight line.
+                Candidate? hop = null;
+                float bestLen = float.MaxValue;
+                foreach (var k in c.Candidates)
+                {
+                    if (!k.Reachable || h.WouldNotice(k.Pos) || PathNoticed(h, c.MosquitoPos, k.Pos)) continue;
+                    if (!CandidatePoints.CanReachSkin(k.Pos, s) || PathNoticed(h, k.Pos, s.Center)) continue;
+                    float len = k.Dist + Vector3.Distance(k.Pos, s.Center);
+                    if (len < bestLen && k.Dist > SubgoalConstants.MoveToRadius) { bestLen = len; hop = k; }
+                }
+                if (hop != null) return new PlannerCommand(Subgoal.MoveTo, hop.Value.Id);
+            }
+            // No unnoticed way: route as before (rule A+B's approach part).
+            foreach (var s in allowed)
+                if (CandidatePoints.CanReachSkin(c.MosquitoPos, s)) return new PlannerCommand(Subgoal.Approach, s.id);
+            if (c.Candidates.Count > 0)
+            {
+                Candidate? first = FirstHop(c, allowed);
+                if (first != null) return new PlannerCommand(Subgoal.MoveTo, first.Value.Id);
+            }
+            return new PlannerCommand(Subgoal.Approach, allowed[0].id);
+        }
+
+        /// <summary>Would the human notice the mosquito somewhere on the straight flight a→b (0.2 m steps)?</summary>
+        static bool PathNoticed(HumanController h, Vector3 a, Vector3 b)
+        {
+            int n = Mathf.Max(1, Mathf.CeilToInt(Vector3.Distance(a, b) / 0.2f));
+            for (int i = 1; i <= n; i++)
+            {
+                Vector3 p = Vector3.Lerp(a, b, (float)i / n);
+                if (Vector3.Distance(p, b) < 0.15f) break; // the last bit is the skin itself (scored separately)
+                if (h.WouldNotice(p)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Reference condition "nearest" (the fixed planner before 11/28): APPROACH the nearest skin.</summary>
+        public static PlannerCommand NearestSkin(PlannerContext c)
         {
             SkinZone s = Nearest(c, c.AllowedSkins());
             if (s == null)
@@ -61,12 +151,24 @@ namespace MosquitoSim
         /// that has a clear line to the human; else APPROACH
         /// the skin farthest from the hand (stage 2+) or the nearest skin.
         /// </summary>
+        /// <summary>
+        /// Oracle rule variant (11/28 diagnosis, evaluation option oracle_variant; training keeps 0).
+        /// 0 original. 1 (A): stage 2+ skips skins within the buzz radius of the head (the face) when another
+        /// skin is left, so approaching does not itself make the human alert. 2 (A+B): also hides only when the
+        /// human sees the mosquito now, and keeps hiding until the alert ends; unseen, it keeps feeding.
+        /// </summary>
+        public static int OracleVariant;
+
         public static PlannerCommand Rule(PlannerContext c)
         {
+            if (OracleVariant >= 3 && c.Stage >= 2 && !c.HideSituation) return RuleC(c);
             if (c.Stage >= 2 && c.Hand.Active && Vector3.Distance(c.Hand.Position, c.MosquitoPos) < ThreatDistance)
                 return new PlannerCommand(Subgoal.Evade, null);
 
-            if (c.AlertKnown && c.Candidates.Count > 0)
+            bool hideNow = c.AlertKnown;
+            if (OracleVariant >= 2 && !c.HideSituation)
+                hideNow = c.AlertKnown && (c.Human.Spotted || c.Current.Subgoal == Subgoal.Hide);
+            if (hideNow && c.Candidates.Count > 0)
             {
                 Candidate? best = null;
                 foreach (var k in c.Candidates)
@@ -88,6 +190,11 @@ namespace MosquitoSim
             {
                 c.ExcludedSkins?.Clear();
                 allowed.AddRange(c.Human.skins);
+            }
+            if (OracleVariant >= 1 && c.Stage >= 2)
+            {
+                var away = allowed.FindAll(s => Vector3.Distance(s.Center, c.Human.HeadPos) > HumanController.BuzzRadius);
+                if (away.Count > 0) allowed = away;
             }
             // Preference: stage 2+ the skin farthest from the hand, else the nearest.
             if (c.Stage >= 2)

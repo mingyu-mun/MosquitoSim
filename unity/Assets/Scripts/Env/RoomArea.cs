@@ -79,6 +79,8 @@ namespace MosquitoSim
                 // The human only stands where the whole net fits inside the room (11/25); the net is turned
                 // close to the room axes so it does not cut into a wall.
                 m_NetYaw = 90f * rng.Next(4) + Range(rng, -10f, 10f);
+                human.Strict = p.StrictHuman;
+                human.Lethal = p.AlertLethal;
                 human.ResetHuman(this, humanRng, walking, p.FastHuman, p.BiteAlertChance);
                 Decor.PlaceStructure(decorRng, this, human, stage >= 1);
                 net.Place(human.transform.position, m_NetYaw, rng.Next(4));
@@ -102,6 +104,8 @@ namespace MosquitoSim
                     Decor.PlaceClutter(decorRng, this, null, clutter);
                 }
                 Physics.SyncTransforms();
+                human.Strict = p.StrictHuman;
+                human.Lethal = p.AlertLethal;
                 human.ResetHuman(this, humanRng, walking, p.FastHuman, p.BiteAlertChance);
             }
 
@@ -161,7 +165,22 @@ namespace MosquitoSim
         public static int NetFitFailures;
 
         /// <summary>Random point in the air, free of geometry, outside the net, away from the human.</summary>
+        /// <summary>Mosquito start (11/28): at least minDistance from the human, relaxed in steps if no point fits.</summary>
+        public Vector3 SampleStart(System.Random rng, float minDistance)
+        {
+            for (float d = minDistance; d > 1.0f; d -= 0.25f)
+                if (TrySampleFreePoint(rng, d, -1f, out Vector3 p)) return p;
+            return SampleFreePoint(rng, Mathf.Min(1.0f, minDistance));
+        }
+
         public Vector3 SampleFreePoint(System.Random rng, float minDistanceFromHuman, float radius = -1f)
+        {
+            if (TrySampleFreePoint(rng, minDistanceFromHuman, radius, out Vector3 q)) return q;
+            Debug.LogWarning($"{name}: no free point found");
+            return q;
+        }
+
+        bool TrySampleFreePoint(System.Random rng, float minDistanceFromHuman, float radius, out Vector3 result)
         {
             float r = radius > 0f ? radius : freeRadius;
             Vector3 p = transform.position + Vector3.up * 1.5f;
@@ -177,10 +196,11 @@ namespace MosquitoSim
                 Vector3 flat = p - human.transform.position;
                 flat.y = 0f;
                 if (flat.magnitude < minDistanceFromHuman) continue;
-                return p;
+                result = p;
+                return true;
             }
-            Debug.LogWarning($"{name}: no free point found");
-            return p;
+            result = p;
+            return false;
         }
 
         /// <summary>

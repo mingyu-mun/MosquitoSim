@@ -71,12 +71,35 @@ namespace MosquitoSim
         Vector3 m_SoundPos;
         Subgoal m_ProbeSubgoal;
         string m_ProbeTarget, m_ProbeOutcome;
+        float m_ProbeTargetClear, m_ProbeMinClear; // 11/26 diag: free distance around the target / the mosquito at its closest
         float m_ProbeTime, m_ProbeStartDist, m_ProbeMinDist, m_ProbeHold, m_ProbeTargetHeight;
 
         public PlannerCommand CurrentCommand => m_Tracker.Command;
         public float SimTime => m_SimTime;
         public Vector3 SubgoalTarget => m_Tracker.Target;
-        /// <summary>Point the policy is steered to: a route waypoint for MOVE_TO / HIDE, else the target.</summary>
+        /// <summary>11/26 diag: distance to the nearest obstacle surface (26 rays, up to 1 m).</summary>
+        static float Clearance(Vector3 p)
+        {
+            float best = 1f;
+            for (int x = -1; x <= 1; x++)
+            for (int y = -1; y <= 1; y++)
+            for (int z = -1; z <= 1; z++)
+            {
+                if (x == 0 && y == 0 && z == 0) continue;
+                Vector3 dir = new Vector3(x, y, z).normalized;
+                if (Physics.Raycast(p, dir, out RaycastHit h, best, NavGrid.Mask, QueryTriggerInteraction.Ignore)) best = h.distance;
+            }
+            return best;
+        }
+
+        Vector3 EvadePoint(Vector3 pos)
+        {
+            Vector3 away = pos - m_Area.hand.Position;
+            if (away.sqrMagnitude < 1e-6f) away = Vector3.up;
+            return pos + away.normalized * SubgoalConstants.EvadeDistance;
+        }
+
+        /// <summary>Point the policy is steered to: a route waypoint for HIDE, else the target.</summary>
         public Vector3 GuideTarget => m_Guide.Active ? m_Guide.Waypoint : m_Tracker.Target;
         readonly PathGuide m_Guide = new PathGuide();
         // MOVE_TO is a straight flight (11/25): routing round obstacles is the planner's job, so it is not guided.
@@ -98,6 +121,16 @@ namespace MosquitoSim
         /// <summary>Auto tests: receives every episode_end record (the same JSON the planner channel gets).</summary>
         public static System.Action<string> EpisodeLog;
         /// <summary>Auto-test report: route benchmark totals over finished episodes (11/25).</summary>
+        /// <summary>Auto-test report: what the planner asked for and how feeding went (11/28 stage 2 diagnosis).</summary>
+        public static int DiagHide, DiagEvade, DiagApproach, DiagMoveTo, DiagFeedBreaks, DiagLandings, DiagSuccess,
+            DiagCaught, DiagTimeout, DiagEpisodes;
+        public static float DiagAlertTime, DiagHideTime, DiagSimTime;
+        readonly List<string> m_SkinOrder = new List<string>();
+        string m_FedSkin = "";
+        float m_StartDist;
+        int m_HideCmds, m_EvadeCmds, m_FeedBreaks, m_Landings;
+        float m_AlertTime, m_HideTime, m_FeedBest;
+        Subgoal m_LastCmd = (Subgoal)(-1);
         public static int RouteEpisodes, RouteFound, RouteDirect, NetEpisodes, NetEntered,
             MoveToCmds, MoveToBlocked, ApproachCmds, ApproachBlocked;
         public static float NetEnterSeconds;
@@ -114,6 +147,8 @@ namespace MosquitoSim
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetCounters() { Episodes = Successes = Caught = Trapped = Decisions = GuidedSteps = UnroutedSteps = SegEnds = SegInterrupts = RuleCommands = RandomCommands = 0;
+            DiagHide = DiagEvade = DiagApproach = DiagMoveTo = DiagFeedBreaks = DiagLandings = DiagSuccess = DiagCaught = DiagTimeout = DiagEpisodes = 0;
+            DiagAlertTime = DiagHideTime = DiagSimTime = 0f;
             RouteEpisodes = RouteFound = RouteDirect = NetEpisodes = NetEntered = MoveToCmds = MoveToBlocked = ApproachCmds = ApproachBlocked = 0;
             NetEnterSeconds = 0f; ProbeStats.Clear(); ProbeOutcomes.Clear(); HideTrace.Clear(); }
 
@@ -150,6 +185,8 @@ namespace MosquitoSim
             m_P = EnvParams.Read();
             m_Tracker.HideHoldSeconds = m_P.HideHold;
             m_Tracker.MoveToRadius = m_P.MoveToRadius;
+            m_Tracker.HideRadius = m_P.HideRadius;
+            Planners.OracleVariant = m_P.IsTraining ? 0 : m_P.OracleVariant;
             m_EpisodeIndex++;
             m_Seed = m_P.IsTraining
                 ? unchecked(System.Environment.TickCount * 31 + m_Area.roomIndex * 7919 + m_EpisodeIndex)
@@ -161,7 +198,19 @@ namespace MosquitoSim
                 m_Area.roomIndex, m_EpisodeIndex);
 
             m_Area.ResetEpisode(m_P, m_Stage, m_Rng);
-            m_Motor.ResetMotor(m_Area.SampleFreePoint(m_Rng, 1.0f));
+            // Fixed planner's skin order: its own generator from the episode seed, so every condition sees the
+            // same order and the room's random draws are untouched (11/28).
+            var skinRng = new System.Random(unchecked(m_Seed * 7 + 12345));
+            m_SkinOrder.Clear();
+            foreach (var s in m_Area.human.skins) m_SkinOrder.Add(s.id);
+            for (int i = m_SkinOrder.Count - 1; i > 0; i--)
+            {
+                int k = skinRng.Next(i + 1);
+                (m_SkinOrder[i], m_SkinOrder[k]) = (m_SkinOrder[k], m_SkinOrder[i]);
+            }
+            m_Motor.ResetMotor(m_Area.SampleStart(m_Rng, m_P.SpawnMinDist)); // 11/28: 2.5 m (was 1 m)
+            m_FedSkin = "";
+            { Vector3 f = transform.position - m_Area.human.transform.position; f.y = 0f; m_StartDist = f.magnitude; }
             SetUpProbe();
 
             m_SimTime = 0f;
@@ -171,6 +220,9 @@ namespace MosquitoSim
             m_Collisions = 0;
             m_RouteHops = -2;
             m_MoveTos = m_MoveToBlocked = m_Approaches = m_ApproachBlocked = 0;
+            m_HideCmds = m_EvadeCmds = m_FeedBreaks = m_Landings = 0;
+            m_AlertTime = m_HideTime = m_FeedBest = 0f;
+            m_LastCmd = (Subgoal)(-1);
             m_NetEnterTime = -1f;
             m_PrevAlert = m_PrevHandActive = false;
             m_Excluded.Clear();
@@ -200,10 +252,15 @@ namespace MosquitoSim
             {
                 Velocity = m_Motor.Velocity,
                 TargetSkinRel = (m_TargetSkin != null ? m_TargetSkin.Center : m_Tracker.Target) - pos,
-                SubgoalTargetRel = GuideTarget - pos,
+                // Experiment (11/26): EVADE shows a point 1.5 m straight away from the hand in the subgoal slot,
+                // so 'fly to the subgoal target' (what stages 0-1 teach) means escaping. Before, the slot held the
+                // hand itself and the stage 1 policy flew into the swat. The hand is still observed in hand_*.
+                SubgoalTargetRel = (m_Tracker.Command.Subgoal == Subgoal.Evade ? EvadePoint(pos) : GuideTarget) - pos,
                 HumanVelocity = dynamic ? human.Velocity : Vector3.zero,
                 HumanAlert = dynamic && human.Alert,
-                HandActive = dynamic && hand.Active,
+                // 11/28: with the costly alert the wind-up gives the policy no warning (only the swing itself shows),
+                // so a mosquito that stays on the skin cannot simply dodge by reflex; the planner has to hide it.
+                HandActive = dynamic && (human.Lethal ? hand.Current == HandController.State.Swing : hand.Active),
                 HandRel = dynamic ? hand.Position - pos : Vector3.zero,
                 HandVelocity = dynamic ? hand.Velocity : Vector3.zero,
                 // Mosquito coil (stage 3, extension) is not implemented: hazard fields stay 0.
@@ -260,7 +317,7 @@ namespace MosquitoSim
             }
             if (r.Collided)
             {
-                AddReward(-k_CollisionPenalty);
+                AddReward(-m_P.CollisionPenalty);
                 m_Collisions++;
             }
             AddReward(-m_P.TimePenalty * dt);
@@ -292,7 +349,7 @@ namespace MosquitoSim
             if (m_HideScenario && !m_ProbeDone)
             {
                 float d = Vector3.Distance(pos, m_Tracker.Target);
-                if (m_ProbeValid) m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, d);
+                if (m_ProbeValid && d < m_ProbeMinDist) { m_ProbeMinDist = d; m_ProbeMinClear = Clearance(pos); }
                 if (!m_Searching)
                 {
                     // The mosquito flies to its spot while the human stands still; the alert starts on arrival.
@@ -318,6 +375,7 @@ namespace MosquitoSim
             if (m_P.HideHoldReward > 0f && m_Tracker.Holding) AddReward(m_P.HideHoldReward * dt);
             bool hazard = m_Stage >= 2 && hand.Active;
             SubgoalStatus status = m_Tracker.Step(m_SimTime, dt, pos, m_Motor.IsLanded, hazard);
+            if (m_Tracker.JustEntered && m_P.HideArriveBonus > 0f) AddReward(m_P.HideArriveBonus);
             if (status != SubgoalStatus.Running && m_P.Planner == PlannerKind.Random)
             {
                 // Training progress per subgoal (TensorBoard). Mid-switched subgoals are not counted.
@@ -345,14 +403,20 @@ namespace MosquitoSim
             if (status != SubgoalStatus.Running) EndSegment(false);
 
             // Feeding
+            if (r.TookOff && m_FeedTimer > 0f) m_FeedBreaks++; // took off with a feed started: the feed is lost
             if (r.TookOff) m_FeedTimer = 0f;
+            if (m_Stage >= 2 && m_Area.human.Alert) m_AlertTime += dt;
+            if (m_Tracker.Command.Subgoal == Subgoal.Hide) m_HideTime += dt;
             bool feedGated = m_P.FeedGate && m_Tracker.Command.Subgoal != Subgoal.Approach;
             if (feedGated) m_FeedTimer = 0f;
             else if (m_Motor.IsLanded && m_Motor.LandedZone != null && !m_Motor.LandedZone.covered)
             {
+                if (m_FeedTimer == 0f) m_Landings++;
                 m_FeedTimer += dt;
+                m_FeedBest = Mathf.Max(m_FeedBest, m_FeedTimer);
                 if (m_FeedTimer >= m_P.FeedTime)
                 {
+                    m_FedSkin = m_Motor.LandedZone.id;
                     m_Succeeded = true;
                     AddReward(1f);
                     EndEpisode();
@@ -380,6 +444,7 @@ namespace MosquitoSim
                 Hand = m_Area.hand,
                 Candidates = m_Area.Candidates.Current,
                 ExcludedSkins = m_Excluded,
+                SkinOrder = m_SkinOrder,
                 Current = m_Tracker.Command,
                 HideSituation = m_HideScenario && !m_Chosen,
                 Stage0PointMix = m_P.Stage0PointMix,
@@ -405,7 +470,9 @@ namespace MosquitoSim
             }
 
             if (m_Events.Count == 0 && !midSwitch) return;
-            if (!midSwitch && !Seg && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
+            // 11/28: the hand starting to move is answered at once (the 1 s spacing would let the swat land first).
+            bool urgent = m_Events.Contains("hand_active") || m_Events.Contains("alert_start"); // also the alert (11/28)
+            if (!midSwitch && !Seg && !urgent && m_SimTime - m_LastDecisionTime < k_MinDecisionInterval) return; // keep events pending
 
             if (m_Stage >= 1 || m_P.Planner == PlannerKind.External || m_P.Stage0PointMix > 0f)
             {
@@ -421,6 +488,9 @@ namespace MosquitoSim
             {
                 case PlannerKind.Fixed:
                     Apply(Planners.Fixed(ctx), snapshot, ctx);
+                    break;
+                case PlannerKind.Nearest:
+                    Apply(Planners.NearestSkin(ctx), snapshot, ctx);
                     break;
                 case PlannerKind.MaskedRule:
                     Apply(Planners.MaskedRule(StateDescriber.View(ctx, episodeSeconds)), snapshot, ctx);
@@ -490,6 +560,7 @@ namespace MosquitoSim
 
             j.Key("rule_command"); Planners.Rule(ctx).WriteJson(j); // oracle rule: knows hidden / clear_path
             j.Key("fixed_command"); Planners.Fixed(ctx).WriteJson(j);
+            j.Key("nearest_command"); Planners.NearestSkin(ctx).WriteJson(j);
             j.EndObject();
             ch.Send(j.ToString());
         }
@@ -579,6 +650,12 @@ namespace MosquitoSim
         /// </summary>
         void CountCommand(PlannerCommand cmd, List<Candidate> snapshot)
         {
+            if (cmd.Subgoal != m_LastCmd)
+            {
+                if (cmd.Subgoal == Subgoal.Hide) m_HideCmds++;
+                if (cmd.Subgoal == Subgoal.Evade) m_EvadeCmds++;
+                m_LastCmd = cmd.Subgoal;
+            }
             if (cmd.Subgoal == Subgoal.MoveTo)
             {
                 m_MoveTos++;
@@ -642,6 +719,10 @@ namespace MosquitoSim
             if (m_Trapped) Trapped++;
             Decisions += m_DecisionIndex;
             RouteEpisodes++;
+            DiagEpisodes++; DiagHide += m_HideCmds; DiagEvade += m_EvadeCmds; DiagApproach += m_Approaches;
+            DiagMoveTo += m_MoveTos; DiagFeedBreaks += m_FeedBreaks; DiagLandings += m_Landings;
+            DiagAlertTime += m_AlertTime; DiagHideTime += m_HideTime; DiagSimTime += m_SimTime;
+            if (m_Succeeded) DiagSuccess++; else if (m_Caught) DiagCaught++; else if (!m_Trapped) DiagTimeout++;
             if (m_RouteHops >= 0) RouteFound++;
             if (m_RouteHops == 0) RouteDirect++;
             MoveToCmds += m_MoveTos; MoveToBlocked += m_MoveToBlocked;
@@ -682,7 +763,18 @@ namespace MosquitoSim
                     .Key("approach_commands").Value(m_Approaches)
                     .Key("approach_blocked").Value(m_ApproachBlocked)
                     .Key("net").Value(m_Area.net != null && m_Area.net.Enabled)
-                    .Key("net_enter_time").Value(m_NetEnterTime);
+                    .Key("net_enter_time").Value(m_NetEnterTime)
+                    // 11/28 stage 2 diagnosis: planner command changes, feeding, alert
+                    .Key("fixed_skin").Value(m_SkinOrder.Count > 0 ? m_SkinOrder[0] : "")
+                    .Key("fed_skin").Value(m_FedSkin)
+                    .Key("start_dist").Value(m_StartDist)
+                    .Key("hide_commands").Value(m_HideCmds)
+                    .Key("evade_commands").Value(m_EvadeCmds)
+                    .Key("landings").Value(m_Landings)
+                    .Key("feed_breaks").Value(m_FeedBreaks)
+                    .Key("feed_best").Value(m_FeedBest)
+                    .Key("alert_time").Value(m_AlertTime)
+                    .Key("hide_time").Value(m_HideTime);
                 if (m_Probe || m_HideScenario)
                 {
                     j.Key("probe_subgoal").Value(PlannerCommand.WireName(m_ProbeSubgoal))
@@ -698,7 +790,9 @@ namespace MosquitoSim
                         .Key("probe_valid").Value(!m_HideScenario || m_ProbeValid)
                         .Key("probe_wait").Value(m_ProbeWait)
                         .Key("probe_travel").Value(m_ProbeTravel)
-                        .Key("probe_arrived").Value(m_ProbeArrived);
+                        .Key("probe_arrived").Value(m_ProbeArrived)
+                        .Key("probe_target_clear").Value(m_ProbeTargetClear)
+                        .Key("probe_min_clear").Value(m_ProbeMinClear);
                 }
                 j.EndObject();
                 string rec = j.ToString();
@@ -808,6 +902,8 @@ namespace MosquitoSim
             m_ProbeStarted = true;
             m_ProbeTarget = cmd.Target;
             m_ProbeStartDist = m_ProbeMinDist = Vector3.Distance(pos, m_Tracker.Target);
+            m_ProbeTargetClear = Clearance(m_Tracker.Target);
+            m_ProbeMinClear = Clearance(pos);
             // Same test as a MOVE_TO candidate's Reachable flag, so the two agree (11/25).
             m_ProbePathBlocked = cmd.Subgoal != Subgoal.Evade && !CandidatePoints.StraightClear(pos, m_Tracker.Target);
             m_ProbeTargetHeight = m_Tracker.Target.y - m_Area.human.transform.position.y;
@@ -825,7 +921,7 @@ namespace MosquitoSim
         bool JudgeProbe(float dt, Vector3 pos, SubgoalStatus status)
         {
             float d = Vector3.Distance(pos, m_Tracker.Target);
-            m_ProbeMinDist = Mathf.Min(m_ProbeMinDist, d);
+            if (d < m_ProbeMinDist) { m_ProbeMinDist = d; m_ProbeMinClear = Clearance(pos); }
             string outcome = null;
             switch (m_ProbeSubgoal)
             {

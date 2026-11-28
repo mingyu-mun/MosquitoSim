@@ -52,7 +52,14 @@ namespace MosquitoSim
         public float ApproachTimePenalty; // extra time penalty per second while APPROACH has not landed yet (11/24)
         public bool SegmentEpisodes;   // training: one subgoal = one learning episode, the world carries on (11/24)
         public float RuleMix;          // training: share of commands chosen by the oracle rule planner instead of at random
-        public float Stage0PointMix;   // stage 0: share of commands that are MOVE_TO / HIDE to a free point (11/24)
+        public float Stage0PointMix;    // stage 0: share of commands that are MOVE_TO / HIDE to a free point (11/24)
+        public float HideRadius;        // HIDE: radius used by training (11/26; evaluation always 0.15 m)
+        public float HideArriveBonus;   // HIDE: one-off reward on first entering the radius (11/26)
+        public int OracleVariant;
+        public bool AlertLethal;        // 11/28: see HumanController.Lethal (default on)
+        public bool StrictHuman;        // 11/28: see HumanController.Strict (option, default off)
+        public float SpawnMinDist;      // 11/28: the mosquito starts at least this far (horizontal) from the human       // evaluation option (11/28): Planners.OracleVariant
+        public float CollisionPenalty;  // per collision step (11/26; default 0.01)
 
         public static EnvParams Read()
         {
@@ -81,6 +88,16 @@ namespace MosquitoSim
                 SegmentEpisodes = p.GetWithDefault("segment_episodes", 0f) > 0.5f,
                 RuleMix = p.GetWithDefault("rule_mix", 0f),
                 ApproachTimePenalty = p.GetWithDefault("approach_time_penalty", 0f),
+                HideRadius = p.GetWithDefault("hide_radius", SubgoalConstants.HideRadius),
+                HideArriveBonus = p.GetWithDefault("hide_arrive_bonus", 0f),
+                CollisionPenalty = p.GetWithDefault("collision_penalty", 0.01f),
+                // Oracle rule A+B confirmed 11/28 (docs/interface.md); 0 = the rule before 11/28. Training keeps 0.
+                OracleVariant = Mathf.RoundToInt(p.GetWithDefault("oracle_variant", 2f)),
+                // 11/28: the stricter human was tried and set aside (planners too slow for the hand); kept as an option.
+                StrictHuman = p.GetWithDefault("human_strict", 0f) > 0.5f,
+                AlertLethal = p.GetWithDefault("alert_lethal", 1f) > 0.5f,
+                // 11/28: start farther from the human so a straight dash at it gives the human time to react (was 1 m).
+                SpawnMinDist = p.GetWithDefault("spawn_min_dist", 2.5f),
             };
             // Auto test (Editor Play without Python): the only place test arguments override parameters.
             if (SimSettings.ManualPlay)
@@ -98,9 +115,12 @@ namespace MosquitoSim
                 e.Split = (EnvSplit)Mathf.RoundToInt(AutoTestRunner.F("env_split", (float)e.Split));
                 e.Planner = (PlannerKind)Mathf.RoundToInt(AutoTestRunner.F("planner", (float)e.Planner));
                 e.EvalSeed = Mathf.RoundToInt(AutoTestRunner.F("eval_seed", e.EvalSeed));
-                e.LandingRadius = AutoTestRunner.F("landing_radius", e.LandingRadius);
-                e.LandingSpeed = AutoTestRunner.F("landing_speed", e.LandingSpeed);
-                e.FeedTime = AutoTestRunner.F("feed_time", e.FeedTime);
+                // 11/28 fix: evaluation splits use the evaluation values (as evaluate.py sends them), not the stage 0
+                // curriculum start (feed 1 s, radius 0.06 m, 0.6 m/s). Before this, auto tests fed in 1 s.
+                bool evalSplit = e.Split != EnvSplit.Train;
+                e.LandingRadius = AutoTestRunner.F("landing_radius", evalSplit ? 0.02f : e.LandingRadius);
+                e.LandingSpeed = AutoTestRunner.F("landing_speed", evalSplit ? 0.3f : e.LandingSpeed);
+                e.FeedTime = AutoTestRunner.F("feed_time", evalSplit ? 3f : e.FeedTime);
                 e.BiteAlertChance = AutoTestRunner.F("bite_alert_chance", e.BiteAlertChance);
                 e.ProbeSubgoal = Mathf.RoundToInt(AutoTestRunner.F("probe_subgoal", e.ProbeSubgoal));
                 e.HideScenario = AutoTestRunner.F("hide_scenario", e.HideScenario ? 1f : 0f) > 0.5f;
@@ -111,6 +131,10 @@ namespace MosquitoSim
                 e.HideHold = AutoTestRunner.F("hide_hold", e.HideHold);
                 e.SegmentEpisodes = AutoTestRunner.F("segment_episodes", e.SegmentEpisodes ? 1f : 0f) > 0.5f;
                 e.RuleMix = AutoTestRunner.F("rule_mix", e.RuleMix);
+                e.OracleVariant = Mathf.RoundToInt(AutoTestRunner.F("oracle_variant", e.OracleVariant));
+                e.StrictHuman = AutoTestRunner.F("human_strict", e.StrictHuman ? 1f : 0f) > 0.5f;
+                e.AlertLethal = AutoTestRunner.F("alert_lethal", e.AlertLethal ? 1f : 0f) > 0.5f;
+                e.SpawnMinDist = AutoTestRunner.F("spawn_min_dist", e.SpawnMinDist);
                 e.Stage0PointMix = AutoTestRunner.F("stage0_point_mix", e.Stage0PointMix);
             }
             if (e.Split != EnvSplit.Train)
@@ -125,6 +149,9 @@ namespace MosquitoSim
                 e.SegmentEpisodes = false;
                 e.RuleMix = 0f;
                 e.ApproachTimePenalty = 0f;
+                e.HideRadius = SubgoalConstants.HideRadius;
+                e.HideArriveBonus = 0f;
+                e.CollisionPenalty = 0.01f;
             }
             return e;
         }

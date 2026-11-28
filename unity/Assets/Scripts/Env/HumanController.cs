@@ -20,6 +20,27 @@ namespace MosquitoSim
         public List<SkinZone> skins = new List<SkinZone>();
 
         public const float BuzzRadius = 0.5f;
+        /// <summary>
+        /// Stricter human (11/28, option human_strict, off by default; EnvParams.StrictHuman): buzzing by the ear alerts at once, and a calm
+        /// human who sees the mosquito within CalmSpotRange becomes alert, turns to it and swats it if within reach.
+        /// The hand also follows a mosquito it can still see during the swing (HandController).
+        /// </summary>
+        [System.NonSerialized] public bool Strict = false;
+        public const float CalmSpotRange = 2.0f;
+        /// <summary>
+        /// Ignoring the alert costs (11/28, option alert_lethal, on by default). Calm, the human is as before. When an
+        /// alert starts from buzzing or a bite, the human first turns for OrientSeconds and sees nothing; then, after a
+        /// bite, looks at the bitten spot and swats a mosquito still on it (anywhere on the body, legs included), and
+        /// a mosquito seen during the alert is followed by the hand. A mosquito that hides within the turn survives.
+        /// </summary>
+        [System.NonSerialized] public bool Lethal = true;
+        public const float OrientSeconds = 1f;
+        float m_Orient, m_OffSkin;
+        /// <summary>Auto-test diagnosis (11/28): bite rolls, bite alerts, bite locks, buzz alerts.</summary>
+        public static int DiagBiteRolls, DiagBiteAlerts, DiagBiteLocks, DiagBuzzAlerts, DiagLandedSteps, DiagSteps;
+        Vector3? m_BitePoint;
+        /// <summary>The human is looking at the bitten spot and the mosquito is still on it: the hand reaches anywhere.</summary>
+        public bool BiteLocked { get; private set; }
         public const float BuzzToAlert = 0.4f;
         public const float AlertMinSeconds = 3f, AlertMaxSeconds = 5f;
         /// <summary>Half-angle of the field of view around the head direction.</summary>
@@ -86,6 +107,9 @@ namespace MosquitoSim
         {
             m_Rng = rng;
             m_BiteChance = biteChance;
+            m_Orient = m_OffSkin = 0f;
+            m_BitePoint = null;
+            BiteLocked = false;
             m_AlertTimer = 0f;
             m_ScanTime = 0f;
             Spotted = SpottedEver = false;
@@ -200,12 +224,15 @@ namespace MosquitoSim
                 }
             }
 
+            DiagSteps++; if (mosquitoLanded) DiagLandedSteps++;
             // Buzzing near the head or biting makes the human alert.
             float dHead = Vector3.Distance(mosquitoPos, HeadPos);
             if (!mosquitoLanded && dHead < BuzzRadius) m_Buzz += dt;
             else m_Buzz = Mathf.Max(0f, m_Buzz - 0.5f * dt);
-            if (m_Buzz >= BuzzToAlert)
+            if (m_Buzz >= (Strict ? 0f : BuzzToAlert) && m_Buzz > 0f)
             {
+                if (!Alert) DiagBuzzAlerts++;
+                if (Lethal && !Alert) { m_Orient = OrientSeconds; m_BitePoint = null; }
                 StartAlert(mosquitoPos); // heard it: turn toward the buzzing
                 m_Buzz = 0f;
             }
@@ -216,16 +243,42 @@ namespace MosquitoSim
                 if (m_BiteTimer >= 1f)
                 {
                     m_BiteTimer -= 1f;
-                    if (m_Rng.NextDouble() < m_BiteChance) StartAlert();
+                    DiagBiteRolls++;
+                    if (m_Rng.NextDouble() < m_BiteChance)
+                    {
+                        DiagBiteAlerts++;
+                        if (Lethal)
+                        {
+                            if (!Alert) m_Orient = OrientSeconds;
+                            m_BitePoint = mosquitoPos; // felt the bite: will look there
+                            StartAlert(mosquitoPos);
+                        }
+                        else StartAlert();
+                    }
                 }
             }
             else
             {
-                m_BiteTimer = 0f;
+                // 11/28 fix: the landing flickers (the motor lifts off and settles again within a few steps), which
+                // reset this timer before it ever reached 1 s, so bites almost never alerted the human (alert time
+                // 1-5 % in the 11/28 stage 2 runs). Only an absence longer than 0.5 s now ends the bite.
+                m_OffSkin += dt;
+                if (m_OffSkin > 0.5f) m_BiteTimer = 0f;
+            }
+            if (mosquitoLanded) m_OffSkin = 0f;
+
+            // Strict human: a calm human notices a mosquito in front of the face within CalmSpotRange.
+            if (Strict && !Alert)
+            {
+                Vector3 toM = mosquitoPos - HeadPos;
+                if (toM.magnitude <= CalmSpotRange && Vector3.Angle(transform.forward, toM) <= ViewHalfAngle && CanSee(mosquitoPos))
+                    StartAlert(mosquitoPos);
             }
 
             // Looking: sweep the head while alert; lock on while the mosquito is in view.
             Spotted = false;
+            BiteLocked = false;
+            if (!Alert) m_BitePoint = null;
             if (Alert)
             {
                 Vector3 toMosq = mosquitoPos - HeadPos;
@@ -240,6 +293,23 @@ namespace MosquitoSim
                 // While turning the head faces forward; the sweep starts once the body has turned.
                 Vector3 scan = turning ? transform.forward
                     : Quaternion.Euler(0f, ScanAmplitude * Mathf.Sin(Mathf.PI * m_ScanTime / ScanSideSeconds), 0f) * transform.forward;
+                if (Lethal && m_Orient > 0f)
+                {
+                    // Turning toward the sound or the bite (11/28): nothing is seen yet.
+                    m_Orient -= dt;
+                    GazeDir = scan;
+                    m_AlertTimer -= dt;
+                    return;
+                }
+                if (Lethal && m_BitePoint.HasValue && m_OffSkin < 0.5f && Vector3.Distance(mosquitoPos, m_BitePoint.Value) < 0.3f)
+                {
+                    // Looks at the bitten spot: the mosquito still on it is seen wherever it is on the body.
+                    if (!BiteLocked) DiagBiteLocks++;
+                    Spotted = SpottedEver = BiteLocked = true;
+                    GazeDir = toMosq.normalized;
+                    m_AlertTimer = m_AlertDuration;
+                    return;
+                }
                 Vector3 look = GazeDir.sqrMagnitude > 0.5f ? GazeDir : scan;
                 bool inView = Vector3.Angle(look, toMosq) <= ViewHalfAngle || Vector3.Angle(scan, toMosq) <= ViewHalfAngle;
                 if (inView && CanSee(mosquitoPos))
@@ -303,6 +373,19 @@ namespace MosquitoSim
         }
 
         /// <summary>Line of sight from the head, ignoring the human's own body.</summary>
+        /// <summary>
+        /// Oracle rule C (11/28): would this human notice a mosquito at p now? In front of the current gaze
+        /// (widened by the head sweep while alert), within CalmSpotRange, line of sight clear.
+        /// </summary>
+        public bool WouldNotice(Vector3 p)
+        {
+            Vector3 to = p - HeadPos;
+            if (to.magnitude > CalmSpotRange) return false;
+            Vector3 look = GazeDir.sqrMagnitude > 0.5f ? GazeDir : transform.forward;
+            float half = ViewHalfAngle + (Alert ? ScanAmplitude : 0f);
+            return Vector3.Angle(look, to) <= half && CanSee(p);
+        }
+
         public bool CanSee(Vector3 p)
         {
             Vector3 from = HeadPos;

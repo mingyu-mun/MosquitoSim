@@ -39,7 +39,8 @@ def test_quotas_and_ids():
 
 
 @pytest.mark.parametrize("cond,key", [("rule_oracle", "rule_command"), ("rule", "rule_command"),
-                                      ("rule_masked", "rule_masked_command"), ("fixed", "fixed_command")])
+                                      ("rule_masked", "rule_masked_command"), ("fixed", "fixed_command"),
+                                      ("nearest", "nearest_command")])
 def test_in_unity_commands_apply_without_delay(cond, key):
     env, res = run(cond)
     assert len(res.episodes) == 8
