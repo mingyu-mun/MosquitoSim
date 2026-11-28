@@ -19,6 +19,13 @@ namespace MosquitoSim
         public const float Reach = 0.9f;
         public const float CatchRadius = 0.06f;
         public const float CooldownSeconds = 1f;
+        /// <summary>
+        /// Costly-to-ignore alert (11/28, HumanController.Lethal): once the alert human sees the mosquito the hand is
+        /// quick and keeps coming: reaction 0.15-0.3 s, 6-8 m/s, reach 1.2 m (leaning), 0.4 s between swings.
+        /// Out of sight, nothing happens; that is what hiding buys.
+        /// </summary>
+        float ReachNow => human.Lethal ? 1.2f : Reach;
+        bool Quick => m_Fast || human.Lethal;
         public const float Lead = 0.1f;
 
         public State Current { get; private set; }
@@ -28,11 +35,12 @@ namespace MosquitoSim
 
         System.Random m_Rng;
         bool m_Fast;
-        float m_Timer, m_Speed;
+        float m_Timer, m_Speed, m_SwingTime;
+        const float MaxSwingSeconds = 0.6f; // a following swing ends after this
         Vector3 m_Target;
 
         Vector3 RestPos => human.transform.TransformPoint(new Vector3(0.3f, 0.9f, 0.15f));
-        Vector3 Shoulder => human.transform.TransformPoint(new Vector3(0.22f, 1.35f, 0f));
+        public Vector3 Shoulder => human.transform.TransformPoint(new Vector3(0.22f, 1.35f, 0f));
 
         public void ResetHand(System.Random rng, bool fast)
         {
@@ -59,10 +67,10 @@ namespace MosquitoSim
                 case State.Rest:
                     hand.position = RestPos;
                     // Swat as soon as the alert human has the mosquito in view and within reach.
-                    if (human.Spotted && Vector3.Distance(mosquitoPos, Shoulder) < Reach)
+                    if (human.Spotted && (human.BiteLocked || Vector3.Distance(mosquitoPos, Shoulder) < ReachNow))
                     {
                         Current = State.WindUp;
-                        m_Timer = m_Fast ? Range(0.15f, 0.3f) : Range(0.3f, 0.5f);
+                        m_Timer = Quick ? Range(0.15f, 0.3f) : Range(0.3f, 0.5f);
                     }
                     break;
 
@@ -72,13 +80,21 @@ namespace MosquitoSim
                     if (m_Timer <= 0f)
                     {
                         m_Target = mosquitoPos + mosquitoVel * Lead;
-                        m_Speed = m_Fast ? Range(6f, 8f) : Range(3f, 5f);
+                        m_Speed = Quick ? Range(6f, 8f) : Range(3f, 5f);
+                        m_SwingTime = 0f;
                         Current = State.Swing;
                     }
                     break;
 
                 case State.Swing:
                 {
+                    // Strict human (11/28): the hand follows a mosquito it can still see within reach; one that
+                    // left the reach or the line of sight is swung at where it was last seen.
+                    if ((human.Strict || human.Lethal) && human.Spotted &&
+                        (human.BiteLocked || Vector3.Distance(mosquitoPos, Shoulder) < ReachNow))
+                        m_Target = mosquitoPos + mosquitoVel * Lead;
+                    m_SwingTime += dt;
+                    if (m_SwingTime > MaxSwingSeconds) { Current = State.Cooldown; m_Timer = human.Lethal ? 0.4f : CooldownSeconds; break; }
                     Vector3 d = m_Target - prev;
                     float step = m_Speed * dt;
                     bool arrived = d.magnitude <= step;
@@ -92,7 +108,7 @@ namespace MosquitoSim
                     if (arrived)
                     {
                         Current = State.Cooldown;
-                        m_Timer = CooldownSeconds;
+                        m_Timer = human.Lethal ? 0.4f : CooldownSeconds;
                     }
                     break;
                 }

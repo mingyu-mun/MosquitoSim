@@ -28,6 +28,8 @@ namespace MosquitoSim
         {
             Active = false;
             MosquitoAgent.EpisodeLog = null;
+            HumanController.DiagBiteRolls = HumanController.DiagBiteAlerts = HumanController.DiagBiteLocks =
+                HumanController.DiagBuzzAlerts = HumanController.DiagLandedSteps = HumanController.DiagSteps = 0;
             RoomArea.NetRouteFailures = RoomArea.NetLayouts = RoomArea.NetSideSwaps = RoomArea.NetFitFailures = 0;
             Args.Clear();
             s_Logs.Clear();
@@ -280,6 +282,15 @@ namespace MosquitoSim
             foreach (var kv in MosquitoAgent.ProbeOutcomes)
                 Diagnose("점검 결과", $"{kv.Key} {kv.Value.x:0}회, 평균 {kv.Value.y / Mathf.Max(1f, kv.Value.x):0.00}초");
             foreach (var line in MosquitoAgent.HideTrace) Diagnose("HIDE", line);
+            Diagnose("물림 진단", $"사람 스텝 {HumanController.DiagSteps}, 착지 스텝 {HumanController.DiagLandedSteps}, 물림 판정 {HumanController.DiagBiteRolls}, " +
+                $"물림 경계 {HumanController.DiagBiteAlerts}, 물린 곳 확인 {HumanController.DiagBiteLocks}, 소리 경계 {HumanController.DiagBuzzAlerts}");
+            if (MosquitoAgent.DiagEpisodes > 0)
+            {
+                int dn = MosquitoAgent.DiagEpisodes;
+                Diagnose("2단계 진단", $"에피소드 {dn}: 흡혈 {MosquitoAgent.DiagSuccess}, 잡힘 {MosquitoAgent.DiagCaught}, 시간 초과 {MosquitoAgent.DiagTimeout}; " +
+                    $"에피소드당 HIDE 전환 {(float)MosquitoAgent.DiagHide / dn:0.0}회, EVADE 전환 {(float)MosquitoAgent.DiagEvade / dn:0.0}회, 착지 {(float)MosquitoAgent.DiagLandings / dn:0.0}회, " +
+                    $"흡혈 도중 이륙 {(float)MosquitoAgent.DiagFeedBreaks / dn:0.0}회; 시간 중 경계 {100f * MosquitoAgent.DiagAlertTime / Mathf.Max(1e-3f, MosquitoAgent.DiagSimTime):0}%, HIDE 지시 중 {100f * MosquitoAgent.DiagHideTime / Mathf.Max(1e-3f, MosquitoAgent.DiagSimTime):0}%");
+            }
             if (MosquitoAgent.RouteEpisodes > 0)
             {
                 int ne = MosquitoAgent.NetEntered;

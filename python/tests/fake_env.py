@@ -52,6 +52,7 @@ class FakeEnv:
             "images": [],
             "rule_command": {"subgoal": "HIDE", "target": "P2"},
             "fixed_command": {"subgoal": "APPROACH", "target": "S2"},
+            "nearest_command": {"subgoal": "APPROACH", "target": "S1"},
         })
         self.decision[r] += 1
 

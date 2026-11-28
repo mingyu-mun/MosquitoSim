@@ -23,21 +23,25 @@ from mosquitosim.masked_rule import masked_rule  # noqa: E402
 from mosquitosim.planner_client import PlanResult  # noqa: E402
 from mosquitosim.subgoals import parse_planner_output  # noqa: E402
 
-# fixed        APPROACH the nearest skin (lower reference)
+# fixed        APPROACH one random skin per episode (lower reference, 11/28; drawn from the episode seed)
+# nearest      APPROACH the nearest skin (reference: the fixed planner before 11/28)
 # rule_masked  hand-written rule on the same view as the VLM (mosquitosim.masked_rule)
 # rule_oracle  Unity's rule that knows hidden / clear_path (upper reference)
 # vlm          VLM with the instruction and the five images
 # vlm_noimg    the same VLM with the instruction only
 # probe        direct subgoal check: Unity's probe planner (planner=4), no planner requests
-CONDITIONS = ("fixed", "rule_masked", "rule_oracle", "vlm", "vlm_noimg", "probe")
+CONDITIONS = ("fixed", "nearest", "rule_masked", "rule_oracle", "vlm", "vlm_noimg", "probe")
 CONDITION_ALIASES = {"rule": "rule_oracle"}  # runs before 11/22 called the oracle rule "rule"
-NO_LATENCY_CONDITIONS = ("fixed", "rule_masked", "rule_oracle", "probe")
+NO_LATENCY_CONDITIONS = ("fixed", "nearest", "rule_masked", "rule_oracle", "probe")
 # Extra episode_end fields: room shape for every run, probe results for probe runs.
 EPISODE_FIELDS = ("episode", "room", "stage", "success", "caught", "trapped", "timeout", "sim_time",
                   "collisions", "decisions", "reward", "room_type", "layout",
                   # route benchmark (11/25)
                   "route_hops", "moveto_commands", "moveto_blocked", "approach_commands", "approach_blocked",
-                  "net", "net_enter_time")
+                  "net", "net_enter_time",
+                  # stage 2 diagnosis (11/28)
+                  "fixed_skin", "fed_skin", "start_dist",
+                  "hide_commands", "evade_commands", "landings", "feed_breaks", "feed_best", "alert_time", "hide_time")
 PROBE_FIELDS = ("probe_subgoal", "probe_target", "probe_outcome", "probe_time", "probe_start_dist",
                 "probe_min_dist", "probe_path_blocked", "probe_target_height", "probe_target_hidden",
                 "probe_spotted", "probe_valid", "probe_wait", "probe_travel", "probe_arrived",
@@ -174,7 +178,8 @@ class EvalLoop:
             "episode": episode, "room": room, "decision": decision, "sim_time": msg.get("sim_time"),
             "condition": cond, "latency": str(self.cfg.latency), "events": msg.get("events"),
             "current_command": msg.get("current_command"), "rule_command": msg.get("rule_command"),
-            "fixed_command": msg.get("fixed_command"), "skins": msg.get("skins"),
+            "fixed_command": msg.get("fixed_command"), "nearest_command": msg.get("nearest_command"),
+            "skins": msg.get("skins"),
             "candidates": msg.get("candidates"), "images": msg.get("images"),
             "instruction": msg.get("instruction"), "requested_at": self.now,
         }
@@ -189,7 +194,7 @@ class EvalLoop:
                     raise ValueError("rule_masked needs the request's 'view' (Unity build older than 11/22?)")
                 cmd = log["rule_masked_command"]
             else:
-                cmd = msg["fixed_command" if cond == "fixed" else "rule_command"]
+                cmd = msg[{"fixed": "fixed_command", "nearest": "nearest_command"}.get(cond, "rule_command")]
             log.update(raw=None, command=cmd, valid=True, service_time=0.0, wall_time=0.0, delay=0.0)
             self.scheduler.schedule(room, episode, decision, cmd, self.now)
             self._log(log)

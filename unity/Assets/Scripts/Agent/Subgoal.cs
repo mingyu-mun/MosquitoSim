@@ -22,12 +22,13 @@ namespace MosquitoSim
     /// </summary>
     public enum PlannerKind
     {
-        Fixed = 0,    // APPROACH nearest skin
+        Fixed = 0,    // APPROACH a random skin per episode (11/28; was the nearest skin)
         Random = 1,   // training
         Rule = 2,     // in Unity, for quick checks
         External = 3, // evaluation
         Probe = 4,    // direct subgoal check: one subgoal per episode, no replanning (11/22)
         MaskedRule = 5, // auto tests only: C# copy of the Python masked rule (11/25)
+        Nearest = 6,  // reference: APPROACH the nearest skin (the fixed planner before 11/28)
     }
 
     public static class SubgoalConstants
